@@ -2,7 +2,6 @@
 name = "proc_macro_test"
 version = "0.0.0"
 license = "MIT OR Apache-2.0"
-authors = ["rust-analyzer developers"]
 edition = "2018"
 publish = false
 
@@ -12,4 +11,4 @@ doctest = false
 [build-dependencies]
 proc_macro_test_impl = { path = "imp", version = "0.0.0" }
 toolchain = { path = "../toolchain", version = "0.0.0" }
-cargo_metadata = "0.13"
+cargo_metadata = "0.14"

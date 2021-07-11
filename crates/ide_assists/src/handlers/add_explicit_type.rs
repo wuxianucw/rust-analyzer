@@ -55,7 +55,8 @@ pub(crate) fn add_explicit_type(acc: &mut Assists, ctx: &AssistContext) -> Optio
     }
 
     // Infer type
-    let ty = ctx.sema.type_of_expr(&expr)?;
+    let (ty, coerced) = ctx.sema.type_of_expr_with_coercion(&expr)?;
+    let ty = coerced.unwrap_or(ty);
     if ty.contains_unknown() || ty.is_closure() {
         cov_mark::hit!(add_explicit_type_not_applicable_if_ty_not_inferred);
         return None;
@@ -257,6 +258,24 @@ fn main() {
             r#"
 fn main() {
     let test @ (): () = ();
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn add_explicit_type_inserts_coercions() {
+        check_assist(
+            add_explicit_type,
+            r#"
+//- minicore: coerce_unsized
+fn f() {
+    let $0x: *const [_] = &[3];
+}
+"#,
+            r#"
+fn f() {
+    let x: *const [i32] = &[3];
 }
 "#,
         );

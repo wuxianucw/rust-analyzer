@@ -62,10 +62,17 @@ impl Request for ViewHir {
     const METHOD: &'static str = "rust-analyzer/viewHir";
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewCrateGraphParams {
+    /// Include *all* crates, not just crates in the workspace.
+    pub full: bool,
+}
+
 pub enum ViewCrateGraph {}
 
 impl Request for ViewCrateGraph {
-    type Params = ();
+    type Params = ViewCrateGraphParams;
     type Result = String;
     const METHOD: &'static str = "rust-analyzer/viewCrateGraph";
 }
@@ -491,4 +498,11 @@ pub enum WorkspaceSymbolSearchScope {
 pub enum WorkspaceSymbolSearchKind {
     OnlyTypes,
     AllSymbols,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompletionResolveData {
+    pub position: lsp_types::TextDocumentPositionParams,
+    pub full_import_path: String,
+    pub imported_name: String,
 }

@@ -3,7 +3,6 @@ name = "ide_diagnostics"
 version = "0.0.0"
 description = "TBD"
 license = "MIT OR Apache-2.0"
-authors = ["rust-analyzer developers"]
 edition = "2018"
 
 [lib]
@@ -27,3 +26,4 @@ ide_db = { path = "../ide_db", version = "0.0.0" }
 expect-test = "1.1"
 
 test_utils = { path = "../test_utils" }
+sourcegen = { path = "../sourcegen" }

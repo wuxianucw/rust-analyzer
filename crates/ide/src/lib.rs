@@ -57,12 +57,11 @@ mod view_item_tree;
 use std::sync::Arc;
 
 use cfg::CfgOptions;
-
-use ide_db::base_db::{
-    salsa::{self, ParallelDatabase},
-    Env, FileLoader, FileSet, SourceDatabase, VfsPath,
-};
 use ide_db::{
+    base_db::{
+        salsa::{self, ParallelDatabase},
+        Env, FileLoader, FileSet, SourceDatabase, VfsPath,
+    },
     symbol_index::{self, FileSymbol},
     LineIndexDatabase,
 };
@@ -80,6 +79,7 @@ pub use crate::{
     highlight_related::HighlightedRange,
     hover::{HoverAction, HoverConfig, HoverDocFormat, HoverGotoTypeData, HoverResult},
     inlay_hints::{InlayHint, InlayHintsConfig, InlayKind},
+    join_lines::JoinLinesConfig,
     markup::Markup,
     move_item::Direction,
     prime_caches::PrimeCachesProgress,
@@ -97,7 +97,6 @@ pub use ide_assists::{
 };
 pub use ide_completion::{
     CompletionConfig, CompletionItem, CompletionItemKind, CompletionRelevance, ImportEdit,
-    InsertTextFormat,
 };
 pub use ide_db::{
     base_db::{
@@ -299,8 +298,8 @@ impl Analysis {
     }
 
     /// Renders the crate graph to GraphViz "dot" syntax.
-    pub fn view_crate_graph(&self) -> Cancellable<Result<String, String>> {
-        self.with_db(|db| view_crate_graph::view_crate_graph(db))
+    pub fn view_crate_graph(&self, full: bool) -> Cancellable<Result<String, String>> {
+        self.with_db(|db| view_crate_graph::view_crate_graph(db, full))
     }
 
     pub fn expand_macro(&self, position: FilePosition) -> Cancellable<Option<ExpandedMacro>> {
@@ -309,10 +308,10 @@ impl Analysis {
 
     /// Returns an edit to remove all newlines in the range, cleaning up minor
     /// stuff like trailing commas.
-    pub fn join_lines(&self, frange: FileRange) -> Cancellable<TextEdit> {
+    pub fn join_lines(&self, config: &JoinLinesConfig, frange: FileRange) -> Cancellable<TextEdit> {
         self.with_db(|db| {
             let parse = db.parse(frange.file_id);
-            join_lines::join_lines(&parse.tree(), frange.range)
+            join_lines::join_lines(&config, &parse.tree(), frange.range)
         })
     }
 
@@ -348,8 +347,8 @@ impl Analysis {
     /// Returns a list of the places in the file where type hints can be displayed.
     pub fn inlay_hints(
         &self,
-        file_id: FileId,
         config: &InlayHintsConfig,
+        file_id: FileId,
     ) -> Cancellable<Vec<InlayHint>> {
         self.with_db(|db| inlay_hints::inlay_hints(db, file_id, config))
     }
@@ -418,8 +417,8 @@ impl Analysis {
     /// Returns a short text describing element at position.
     pub fn hover(
         &self,
-        position: FilePosition,
         config: &HoverConfig,
+        position: FilePosition,
     ) -> Cancellable<Option<RangeInfo<HoverResult>>> {
         self.with_db(|db| hover::hover(db, position, config))
     }
@@ -650,10 +649,10 @@ impl Analysis {
 
     pub fn annotations(
         &self,
+        config: &AnnotationConfig,
         file_id: FileId,
-        config: AnnotationConfig,
     ) -> Cancellable<Vec<Annotation>> {
-        self.with_db(|db| annotations::annotations(db, file_id, config))
+        self.with_db(|db| annotations::annotations(db, config, file_id))
     }
 
     pub fn resolve_annotation(&self, annotation: Annotation) -> Cancellable<Annotation> {

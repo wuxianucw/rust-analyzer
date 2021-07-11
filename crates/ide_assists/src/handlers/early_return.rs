@@ -127,25 +127,26 @@ pub(crate) fn convert_to_guarded_return(acc: &mut Assists, ctx: &AssistContext) 
                         let happy_arm = {
                             let pat = make::tuple_struct_pat(
                                 path,
-                                once(make::ident_pat(make::name("it")).into()),
+                                once(make::ext::simple_ident_pat(make::name("it")).into()),
                             );
                             let expr = {
                                 let path = make::ext::ident_path("it");
                                 make::expr_path(path)
                             };
-                            make::match_arm(once(pat.into()), expr)
+                            make::match_arm(once(pat.into()), None, expr)
                         };
 
                         let sad_arm = make::match_arm(
                             // FIXME: would be cool to use `None` or `Err(_)` if appropriate
                             once(make::wildcard_pat().into()),
+                            None,
                             early_expression,
                         );
 
                         make::expr_match(cond_expr, make::match_arm_list(vec![happy_arm, sad_arm]))
                     };
 
-                    let let_stmt = make::let_stmt(bound_ident, Some(match_expr));
+                    let let_stmt = make::let_stmt(bound_ident, None, Some(match_expr));
                     let let_stmt = let_stmt.indent(if_indent_level);
                     replace(let_stmt.syntax(), &then_block, &parent_block, &if_expr)
                 }
@@ -210,7 +211,7 @@ mod tests {
             r#"
             fn main() {
                 bar();
-                if !true {
+                if false {
                     return;
                 }
                 foo();
@@ -386,7 +387,7 @@ mod tests {
             r#"
             fn main() {
                 while true {
-                    if !true {
+                    if false {
                         continue;
                     }
                     foo();
@@ -443,7 +444,7 @@ mod tests {
             r#"
             fn main() {
                 loop {
-                    if !true {
+                    if false {
                         continue;
                     }
                     foo();

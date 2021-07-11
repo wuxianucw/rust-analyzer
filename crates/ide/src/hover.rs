@@ -308,6 +308,7 @@ fn goto_type_action(db: &RootDatabase, def: Definition) -> Option<HoverAction> {
         let ty = match def {
             Definition::Local(it) => it.ty(db),
             Definition::GenericParam(hir::GenericParam::ConstParam(it)) => it.ty(db),
+            Definition::Field(field) => field.ty(db),
             _ => return None,
         };
 
@@ -531,27 +532,27 @@ mod tests {
 
     fn check_hover_no_result(ra_fixture: &str) {
         let (analysis, position) = fixture::position(ra_fixture);
-        assert!(analysis
+        let hover = analysis
             .hover(
-                position,
                 &HoverConfig {
                     links_in_hover: true,
-                    documentation: Some(HoverDocFormat::Markdown)
-                }
+                    documentation: Some(HoverDocFormat::Markdown),
+                },
+                position,
             )
-            .unwrap()
-            .is_none());
+            .unwrap();
+        assert!(hover.is_none());
     }
 
     fn check(ra_fixture: &str, expect: Expect) {
         let (analysis, position) = fixture::position(ra_fixture);
         let hover = analysis
             .hover(
-                position,
                 &HoverConfig {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
+                position,
             )
             .unwrap()
             .unwrap();
@@ -567,11 +568,11 @@ mod tests {
         let (analysis, position) = fixture::position(ra_fixture);
         let hover = analysis
             .hover(
-                position,
                 &HoverConfig {
                     links_in_hover: false,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
+                position,
             )
             .unwrap()
             .unwrap();
@@ -587,11 +588,11 @@ mod tests {
         let (analysis, position) = fixture::position(ra_fixture);
         let hover = analysis
             .hover(
-                position,
                 &HoverConfig {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::PlainText),
                 },
+                position,
             )
             .unwrap()
             .unwrap();
@@ -607,11 +608,11 @@ mod tests {
         let (analysis, position) = fixture::position(ra_fixture);
         let hover = analysis
             .hover(
-                position,
                 &HoverConfig {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
+                position,
             )
             .unwrap()
             .unwrap();
@@ -2508,6 +2509,7 @@ mod tests$0 {
                                 focus_range: 4..9,
                                 name: "tests",
                                 kind: Module,
+                                description: "mod tests",
                             },
                             kind: TestMod {
                                 path: "tests",
@@ -4129,6 +4131,27 @@ pub fn foo() {}
                 ___
 
                 Checks for `foo = bar; bar = foo` sequences.
+            "#]],
+        )
+    }
+
+    #[test]
+    fn hover_attr_path_qualifier() {
+        cov_mark::check!(name_ref_classify_attr_path_qualifier);
+        check(
+            r#"
+//- /foo.rs crate:foo
+
+//- /lib.rs crate:main.rs deps:foo
+#[fo$0o::bar()]
+struct Foo;
+            "#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                extern crate foo
+                ```
             "#]],
         )
     }

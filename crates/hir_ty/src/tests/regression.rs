@@ -135,6 +135,17 @@ fn recursive_vars_2() {
 }
 
 #[test]
+fn array_elements_expected_type() {
+    check_no_mismatches(
+        r#"
+        fn test() {
+            let x: [[u32; 2]; 2] = [[1, 2], [3, 4]];
+        }
+        "#,
+    );
+}
+
+#[test]
 fn infer_std_crash_1() {
     // caused stack overflow, taken from std
     check_infer(
@@ -1045,5 +1056,24 @@ fn cfg_tail() {
             299..311 '{ "fourth" }': &str
             301..309 '"fourth"': &str
         "#]],
+    )
+}
+
+#[test]
+fn impl_trait_in_option_9530() {
+    check_types(
+        r#"
+struct Option<T>;
+impl<T> Option<T> {
+    fn unwrap(self) -> T { loop {} }
+}
+fn make() -> Option<impl Copy> { Option }
+trait Copy {}
+fn test() {
+    let o = make();
+    o.unwrap();
+  //^^^^^^^^^^ impl Copy
+}
+        "#,
     )
 }

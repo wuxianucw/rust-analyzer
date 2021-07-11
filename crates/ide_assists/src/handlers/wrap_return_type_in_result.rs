@@ -1,6 +1,6 @@
 use std::iter;
 
-use ide_db::helpers::for_each_tail_expr;
+use ide_db::helpers::{for_each_tail_expr, FamousDefs};
 use syntax::{
     ast::{self, make, Expr},
     match_ast, AstNode,
@@ -13,6 +13,7 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // Wrap the function's return type into Result.
 //
 // ```
+// # //- minicore: result
 // fn foo() -> i32$0 { 42i32 }
 // ```
 // ->
@@ -33,16 +34,15 @@ pub(crate) fn wrap_return_type_in_result(acc: &mut Assists, ctx: &AssistContext)
             _ => return None,
         }
     };
-    let body = ast::Expr::BlockExpr(body);
 
     let type_ref = &ret_type.ty()?;
-    let ret_type_str = type_ref.syntax().text().to_string();
-    let first_part_ret_type = ret_type_str.splitn(2, '<').next();
-    if let Some(ret_type_first_part) = first_part_ret_type {
-        if ret_type_first_part.ends_with("Result") {
-            cov_mark::hit!(wrap_return_type_in_result_simple_return_type_already_result);
-            return None;
-        }
+    let ty = ctx.sema.resolve_type(type_ref).and_then(|ty| ty.as_adt());
+    let result_enum =
+        FamousDefs(&ctx.sema, ctx.sema.scope(type_ref.syntax()).krate()).core_result_Result()?;
+
+    if matches!(ty, Some(hir::Adt::Enum(ret_type)) if ret_type == result_enum) {
+        cov_mark::hit!(wrap_return_type_in_result_simple_return_type_already_result);
+        return None;
     }
 
     acc.add(
@@ -50,6 +50,8 @@ pub(crate) fn wrap_return_type_in_result(acc: &mut Assists, ctx: &AssistContext)
         "Wrap return type in Result",
         type_ref.syntax().text_range(),
         |builder| {
+            let body = ast::Expr::BlockExpr(body);
+
             let mut exprs_to_wrap = Vec::new();
             let tail_cb = &mut |e: &_| tail_cb_impl(&mut exprs_to_wrap, e);
             body.walk(&mut |expr| {
@@ -88,6 +90,11 @@ fn tail_cb_impl(acc: &mut Vec<ast::Expr>, e: &ast::Expr) {
                 for_each_tail_expr(&break_expr_arg, &mut |e| tail_cb_impl(acc, e))
             }
         }
+        Expr::ReturnExpr(ret_expr) => {
+            if let Some(ret_expr_arg) = &ret_expr.expr() {
+                for_each_tail_expr(ret_expr_arg, &mut |e| tail_cb_impl(acc, e));
+            }
+        }
         e => acc.push(e.clone()),
     }
 }
@@ -103,6 +110,7 @@ mod tests {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i3$02 {
     let test = "test";
     return 42i32;
@@ -122,6 +130,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i3$02 {
     loop {
         break if true {
@@ -151,6 +160,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() {
     || -> i32$0 {
         let test = "test";
@@ -174,6 +184,7 @@ fn foo() {
         check_assist_not_applicable(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32 {
     let test = "test";$0
     return 42i32;
@@ -187,6 +198,7 @@ fn foo() -> i32 {
         check_assist_not_applicable(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() {
     || -> i32 {
         let test = "test";$0
@@ -199,7 +211,13 @@ fn foo() {
 
     #[test]
     fn wrap_return_type_in_result_closure_non_block() {
-        check_assist_not_applicable(wrap_return_type_in_result, r#"fn foo() { || -> i$032 3; }"#);
+        check_assist_not_applicable(
+            wrap_return_type_in_result,
+            r#"
+//- minicore: result
+fn foo() { || -> i$032 3; }
+"#,
+        );
     }
 
     #[test]
@@ -207,7 +225,8 @@ fn foo() {
         check_assist_not_applicable(
             wrap_return_type_in_result,
             r#"
-fn foo() -> std::result::Result<i32$0, String> {
+//- minicore: result
+fn foo() -> core::result::Result<i32$0, String> {
     let test = "test";
     return 42i32;
 }
@@ -221,6 +240,7 @@ fn foo() -> std::result::Result<i32$0, String> {
         check_assist_not_applicable(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> Result<i32$0, String> {
     let test = "test";
     return 42i32;
@@ -234,6 +254,7 @@ fn foo() -> Result<i32$0, String> {
         check_assist_not_applicable(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() {
     || -> Result<i32$0, String> {
         let test = "test";
@@ -249,6 +270,7 @@ fn foo() {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> $0i32 {
     let test = "test";
     return 42i32;
@@ -268,6 +290,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() ->$0 i32 {
     let test = "test";
     42i32
@@ -287,6 +310,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() {
     || ->$0 i32 {
         let test = "test";
@@ -309,8 +333,13 @@ fn foo() {
     fn wrap_return_type_in_result_simple_with_tail_only() {
         check_assist(
             wrap_return_type_in_result,
-            r#"fn foo() -> i32$0 { 42i32 }"#,
-            r#"fn foo() -> Result<i32, ${0:_}> { Ok(42i32) }"#,
+            r#"
+//- minicore: result
+fn foo() -> i32$0 { 42i32 }
+"#,
+            r#"
+fn foo() -> Result<i32, ${0:_}> { Ok(42i32) }
+"#,
         );
     }
 
@@ -319,6 +348,7 @@ fn foo() {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     if true {
         42i32
@@ -344,6 +374,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() {
     || -> i32$0 {
         if true {
@@ -373,6 +404,7 @@ fn foo() {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     if true {
         if false {
@@ -406,6 +438,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 async fn foo() -> i$032 {
     if true {
         if false {
@@ -438,8 +471,13 @@ async fn foo() -> Result<i32, ${0:_}> {
     fn wrap_return_type_in_result_simple_with_array() {
         check_assist(
             wrap_return_type_in_result,
-            r#"fn foo() -> [i32;$0 3] { [1, 2, 3] }"#,
-            r#"fn foo() -> Result<[i32; 3], ${0:_}> { Ok([1, 2, 3]) }"#,
+            r#"
+//- minicore: result
+fn foo() -> [i32;$0 3] { [1, 2, 3] }
+"#,
+            r#"
+fn foo() -> Result<[i32; 3], ${0:_}> { Ok([1, 2, 3]) }
+"#,
         );
     }
 
@@ -448,6 +486,7 @@ async fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -$0> i32 {
     if true {
         if false {
@@ -481,6 +520,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let my_var = 5;
     match my_var {
@@ -506,6 +546,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let my_var = 5;
     loop {
@@ -533,6 +574,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let my_var = let x = loop {
         break 1;
@@ -556,6 +598,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let my_var = 5;
     let res = match my_var {
@@ -580,6 +623,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let my_var = 5;
     let res = if my_var == 5 {
@@ -609,6 +653,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let my_var = 5;
     match my_var {
@@ -658,6 +703,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i$032 {
     let test = "test";
     if test == "test" {
@@ -683,6 +729,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo(the_field: u32) ->$0 u32 {
     let true_closure = || { return true; };
     if the_field < 5 {
@@ -715,45 +762,46 @@ fn foo(the_field: u32) -> Result<u32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
-            fn foo(the_field: u32) -> u32$0 {
-                let true_closure = || {
-                    return true;
-                };
-                if the_field < 5 {
-                    let mut i = 0;
+//- minicore: result
+fn foo(the_field: u32) -> u32$0 {
+    let true_closure = || {
+        return true;
+    };
+    if the_field < 5 {
+        let mut i = 0;
 
 
-                    if true_closure() {
-                        return 99;
-                    } else {
-                        return 0;
-                    }
-                }
-                let t = None;
+        if true_closure() {
+            return 99;
+        } else {
+            return 0;
+        }
+    }
+    let t = None;
 
-                t.unwrap_or_else(|| the_field)
-            }
-            "#,
+    t.unwrap_or_else(|| the_field)
+}
+"#,
             r#"
-            fn foo(the_field: u32) -> Result<u32, ${0:_}> {
-                let true_closure = || {
-                    return true;
-                };
-                if the_field < 5 {
-                    let mut i = 0;
+fn foo(the_field: u32) -> Result<u32, ${0:_}> {
+    let true_closure = || {
+        return true;
+    };
+    if the_field < 5 {
+        let mut i = 0;
 
 
-                    if true_closure() {
-                        return Ok(99);
-                    } else {
-                        return Ok(0);
-                    }
-                }
-                let t = None;
+        if true_closure() {
+            return Ok(99);
+        } else {
+            return Ok(0);
+        }
+    }
+    let t = None;
 
-                Ok(t.unwrap_or_else(|| the_field))
-            }
-            "#,
+    Ok(t.unwrap_or_else(|| the_field))
+}
+"#,
         );
     }
 
@@ -762,6 +810,7 @@ fn foo(the_field: u32) -> Result<u32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo() -> i32$0 {
     let test = "test";
     if test == "test" {
@@ -796,6 +845,7 @@ fn foo() -> Result<i32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo(the_field: u32) -> u32$0 {
     if the_field < 5 {
         let mut i = 0;
@@ -836,6 +886,7 @@ fn foo(the_field: u32) -> Result<u32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo(the_field: u32) -> u3$02 {
     if the_field < 5 {
         let mut i = 0;
@@ -864,6 +915,7 @@ fn foo(the_field: u32) -> Result<u32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo(the_field: u32) -> u32$0 {
     if the_field < 5 {
         let mut i = 0;
@@ -894,6 +946,7 @@ fn foo(the_field: u32) -> Result<u32, ${0:_}> {
         check_assist(
             wrap_return_type_in_result,
             r#"
+//- minicore: result
 fn foo(the_field: u32) -> $0u32 {
     if the_field < 5 {
         let mut i = 0;

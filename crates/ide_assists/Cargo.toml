@@ -3,7 +3,6 @@ name = "ide_assists"
 version = "0.0.0"
 description = "TBD"
 license = "MIT OR Apache-2.0"
-authors = ["rust-analyzer developers"]
 edition = "2018"
 
 [lib]
@@ -24,4 +23,5 @@ hir = { path = "../hir", version = "0.0.0" }
 
 [dev-dependencies]
 test_utils = { path = "../test_utils" }
+sourcegen = { path = "../sourcegen" }
 expect-test = "1.1"

@@ -1,4 +1,7 @@
 //! Handle syntactic aspects of inserting a new `use`.
+#[cfg(test)]
+mod tests;
+
 use std::cmp::Ordering;
 
 use hir::Semantics;
@@ -145,14 +148,18 @@ impl ImportScope {
                             let prefix_c = prev_prefix.qualifiers().count();
                             let curr_c = curr_path.qualifiers().count() - prefix_c;
                             let prev_c = prev_path.qualifiers().count() - prefix_c;
-                            if curr_c <= 1 || prev_c <= 1 {
-                                // Same prefix but no use tree lists so this has to be of item style.
-                                break ImportGranularityGuess::Item; // this overwrites CrateOrModule, technically the file doesn't adhere to anything here.
+                            if curr_c == 1 && prev_c == 1 {
+                                // Same prefix, only differing in the last segment and no use tree lists so this has to be of item style.
+                                break ImportGranularityGuess::Item;
+                            } else {
+                                // Same prefix and no use tree list but differs in more than one segment at the end. This might be module style still.
+                                res = ImportGranularityGuess::ModuleOrItem;
                             }
+                        } else {
+                            // Same prefix with item tree lists, has to be module style as it
+                            // can't be crate style since the trees wouldn't share a prefix then.
+                            break ImportGranularityGuess::Module;
                         }
-                        // Same prefix with item tree lists, has to be module style as it
-                        // can't be crate style since the trees wouldn't share a prefix then.
-                        break ImportGranularityGuess::Module;
                     }
                 }
             }
@@ -168,6 +175,7 @@ enum ImportGranularityGuess {
     Unknown,
     Item,
     Module,
+    ModuleOrItem,
     Crate,
     CrateOrModule,
 }
@@ -186,6 +194,7 @@ pub fn insert_use<'a>(scope: &ImportScope, path: ast::Path, cfg: &InsertUseConfi
             ImportGranularityGuess::Unknown => mb,
             ImportGranularityGuess::Item => None,
             ImportGranularityGuess::Module => Some(MergeBehavior::Module),
+            ImportGranularityGuess::ModuleOrItem => mb.and(Some(MergeBehavior::Module)),
             ImportGranularityGuess::Crate => Some(MergeBehavior::Crate),
             ImportGranularityGuess::CrateOrModule => mb.or(Some(MergeBehavior::Crate)),
         };
@@ -208,7 +217,7 @@ pub fn insert_use<'a>(scope: &ImportScope, path: ast::Path, cfg: &InsertUseConfi
 
     // either we weren't allowed to merge or there is no import that fits the merge conditions
     // so look for the place we have to insert to
-    insert_use_(scope, path, cfg.group, use_item);
+    insert_use_(scope, &path, cfg.group, use_item);
 }
 
 #[derive(Eq, PartialEq, PartialOrd, Ord)]
@@ -247,12 +256,12 @@ impl ImportGroup {
 
 fn insert_use_(
     scope: &ImportScope,
-    insert_path: ast::Path,
+    insert_path: &ast::Path,
     group_imports: bool,
     use_item: ast::Use,
 ) {
     let scope_syntax = scope.as_syntax_node();
-    let group = ImportGroup::new(&insert_path);
+    let group = ImportGroup::new(insert_path);
     let path_node_iter = scope_syntax
         .children()
         .filter_map(|node| ast::Use::cast(node.clone()).zip(Some(node)))
@@ -288,7 +297,7 @@ fn insert_use_(
     let post_insert: Option<(_, _, SyntaxNode)> = group_iter
         .inspect(|(.., node)| last = Some(node.clone()))
         .find(|&(ref path, has_tl, _)| {
-            use_tree_path_cmp(&insert_path, false, path, has_tl) != Ordering::Greater
+            use_tree_path_cmp(insert_path, false, path, has_tl) != Ordering::Greater
         });
 
     if let Some((.., node)) = post_insert {
@@ -372,5 +381,3 @@ fn is_inner_comment(token: SyntaxToken) -> bool {
     ast::Comment::cast(token).and_then(|comment| comment.kind().doc)
         == Some(ast::CommentPlacement::Inner)
 }
-#[cfg(test)]
-mod tests;

@@ -3,7 +3,6 @@ name = "rust-analyzer"
 version = "0.0.0"
 description = "TBD"
 license = "MIT OR Apache-2.0"
-authors = ["rust-analyzer developers"]
 autobins = false
 edition = "2018"
 
@@ -38,7 +37,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.2", default-features = false, features = ["env-filter", "registry"] }
 tracing-tree = { version = "0.1.4" }
 always-assert = "0.1"
-
 stdx = { path = "../stdx", version = "0.0.0" }
 flycheck = { path = "../flycheck", version = "0.0.0" }
 ide = { path = "../ide", version = "0.0.0" }
@@ -67,7 +65,10 @@ jemallocator = { version = "0.4.1", package = "tikv-jemallocator", optional = tr
 
 [dev-dependencies]
 expect-test = "1.1"
+xshell = "0.1"
+
 test_utils = { path = "../test_utils" }
+sourcegen = { path = "../sourcegen" }
 mbe = { path = "../mbe" }
 tt = { path = "../tt" }
 

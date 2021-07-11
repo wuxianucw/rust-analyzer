@@ -1,3 +1,4 @@
+mod sourcegen;
 mod generated;
 
 use expect_test::expect;
@@ -245,7 +246,7 @@ pub fn test_some_range(a: int) -> bool {
         Convert integer base
         Extract into variable
         Extract into function
-        Replace with match
+        Replace if let with match
     "#]]
     .assert_eq(&expected);
 }
@@ -274,7 +275,7 @@ pub fn test_some_range(a: int) -> bool {
             Convert integer base
             Extract into variable
             Extract into function
-            Replace with match
+            Replace if let with match
         "#]]
         .assert_eq(&expected);
     }

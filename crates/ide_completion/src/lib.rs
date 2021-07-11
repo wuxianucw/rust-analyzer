@@ -25,7 +25,7 @@ use crate::{completions::Completions, context::CompletionContext, item::Completi
 
 pub use crate::{
     config::CompletionConfig,
-    item::{CompletionItem, CompletionItemKind, CompletionRelevance, ImportEdit, InsertTextFormat},
+    item::{CompletionItem, CompletionItemKind, CompletionRelevance, ImportEdit},
 };
 
 //FIXME: split the following feature into fine-grained features.
@@ -150,7 +150,6 @@ pub fn completions(
     completions::attribute::complete_attribute(&mut acc, &ctx);
     completions::fn_param::complete_fn_param(&mut acc, &ctx);
     completions::keyword::complete_expr_keyword(&mut acc, &ctx);
-    completions::keyword::complete_use_tree_keyword(&mut acc, &ctx);
     completions::snippet::complete_expr_snippet(&mut acc, &ctx);
     completions::snippet::complete_item_snippet(&mut acc, &ctx);
     completions::qualified_path::complete_qualified_path(&mut acc, &ctx);

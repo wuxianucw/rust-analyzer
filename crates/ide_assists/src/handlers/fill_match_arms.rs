@@ -129,7 +129,7 @@ pub(crate) fn fill_match_arms(acc: &mut Assists, ctx: &AssistContext) -> Option<
         |builder| {
             let new_match_arm_list = match_arm_list.clone_for_update();
             let missing_arms = missing_pats
-                .map(|pat| make::match_arm(iter::once(pat), make::ext::expr_todo()))
+                .map(|pat| make::match_arm(iter::once(pat), None, make::ext::expr_todo()))
                 .map(|it| it.clone_for_update());
 
             let catch_all_arm = new_match_arm_list
@@ -262,8 +262,9 @@ fn build_pat(db: &RootDatabase, module: hir::Module, var: ExtendedVariant) -> Op
                     make::tuple_struct_pat(path, pats).into()
                 }
                 ast::StructKind::Record(field_list) => {
-                    let pats =
-                        field_list.fields().map(|f| make::ident_pat(f.name().unwrap()).into());
+                    let pats = field_list
+                        .fields()
+                        .map(|f| make::ext::simple_ident_pat(f.name().unwrap()).into());
                     make::record_pat(path, pats).into()
                 }
                 ast::StructKind::Unit => make::path_pat(path),

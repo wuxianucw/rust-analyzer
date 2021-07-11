@@ -21,6 +21,13 @@ use crate::{ast, AstNode, SourceFile, SyntaxKind, SyntaxToken};
 pub mod ext {
     use super::*;
 
+    pub fn simple_ident_pat(name: ast::Name) -> ast::IdentPat {
+        return from_text(&name.text());
+
+        fn from_text(text: &str) -> ast::IdentPat {
+            ast_from_text(&format!("fn f({}: ())", text))
+        }
+    }
     pub fn ident_path(ident: &str) -> ast::Path {
         path_unqualified(path_segment(name_ref(ident)))
     }
@@ -330,19 +337,17 @@ pub fn arg_list(args: impl IntoIterator<Item = ast::Expr>) -> ast::ArgList {
     ast_from_text(&format!("fn main() {{ ()({}) }}", args.into_iter().format(", ")))
 }
 
-pub fn ident_pat(name: ast::Name) -> ast::IdentPat {
-    return from_text(&name.text());
-
-    fn from_text(text: &str) -> ast::IdentPat {
-        ast_from_text(&format!("fn f({}: ())", text))
+pub fn ident_pat(ref_: bool, mut_: bool, name: ast::Name) -> ast::IdentPat {
+    let mut s = String::from("fn f(");
+    if ref_ {
+        s.push_str("ref ");
     }
-}
-pub fn ident_mut_pat(name: ast::Name) -> ast::IdentPat {
-    return from_text(&name.text());
-
-    fn from_text(text: &str) -> ast::IdentPat {
-        ast_from_text(&format!("fn f(mut {}: ())", text))
+    if mut_ {
+        s.push_str("mut ");
     }
+    format_to!(s, "{}", name);
+    s.push_str(": ())");
+    ast_from_text(&s)
 }
 
 pub fn wildcard_pat() -> ast::WildcardPat {
@@ -421,9 +426,29 @@ pub fn path_pat(path: ast::Path) -> ast::Pat {
     }
 }
 
-pub fn match_arm(pats: impl IntoIterator<Item = ast::Pat>, expr: ast::Expr) -> ast::MatchArm {
+pub fn match_arm(
+    pats: impl IntoIterator<Item = ast::Pat>,
+    guard: Option<ast::Expr>,
+    expr: ast::Expr,
+) -> ast::MatchArm {
     let pats_str = pats.into_iter().join(" | ");
-    return from_text(&format!("{} => {}", pats_str, expr));
+    return match guard {
+        Some(guard) => from_text(&format!("{} if {} => {}", pats_str, guard, expr)),
+        None => from_text(&format!("{} => {}", pats_str, expr)),
+    };
+
+    fn from_text(text: &str) -> ast::MatchArm {
+        ast_from_text(&format!("fn f() {{ match () {{{}}} }}", text))
+    }
+}
+
+pub fn match_arm_with_guard(
+    pats: impl IntoIterator<Item = ast::Pat>,
+    guard: ast::Expr,
+    expr: ast::Expr,
+) -> ast::MatchArm {
+    let pats_str = pats.into_iter().join(" | ");
+    return from_text(&format!("{} if {} => {}", pats_str, guard, expr));
 
     fn from_text(text: &str) -> ast::MatchArm {
         ast_from_text(&format!("fn f() {{ match () {{{}}} }}", text))
@@ -467,10 +492,19 @@ pub fn where_clause(preds: impl IntoIterator<Item = ast::WherePred>) -> ast::Whe
     }
 }
 
-pub fn let_stmt(pattern: ast::Pat, initializer: Option<ast::Expr>) -> ast::LetStmt {
-    let text = match initializer {
-        Some(it) => format!("let {} = {};", pattern, it),
-        None => format!("let {};", pattern),
+pub fn let_stmt(
+    pattern: ast::Pat,
+    ty: Option<ast::Type>,
+    initializer: Option<ast::Expr>,
+) -> ast::LetStmt {
+    let mut text = String::new();
+    format_to!(text, "let {}", pattern);
+    if let Some(ty) = ty {
+        format_to!(text, ": {}", ty);
+    }
+    match initializer {
+        Some(it) => format_to!(text, " = {};", it),
+        None => format_to!(text, ";"),
     };
     ast_from_text(&format!("fn f() {{ {} }}", text))
 }
@@ -562,6 +596,7 @@ pub fn fn_(
     params: ast::ParamList,
     body: ast::BlockExpr,
     ret_type: Option<ast::RetType>,
+    is_async: bool,
 ) -> ast::Fn {
     let type_params =
         if let Some(type_params) = type_params { format!("<{}>", type_params) } else { "".into() };
@@ -571,9 +606,11 @@ pub fn fn_(
         Some(it) => format!("{} ", it),
     };
 
+    let async_literal = if is_async { "async " } else { "" };
+
     ast_from_text(&format!(
-        "{}fn {}{}{} {}{}",
-        visibility, fn_name, type_params, params, ret_type, body
+        "{}{}fn {}{}{} {}{}",
+        visibility, async_literal, fn_name, type_params, params, ret_type, body
     ))
 }
 

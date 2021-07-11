@@ -39,8 +39,7 @@ pub struct CompletionItem {
     ///
     /// Typically, replaces `source_range` with new identifier.
     text_edit: TextEdit,
-
-    insert_text_format: InsertTextFormat,
+    is_snippet: bool,
 
     /// What item (struct, function, etc) are we completing.
     kind: Option<CompletionItemKind>,
@@ -145,6 +144,15 @@ pub struct CompletionRelevance {
     /// }
     /// ```
     pub is_local: bool,
+    /// This is set in cases like these:
+    ///
+    /// ```
+    /// (a > b).not$0
+    /// ```
+    ///
+    /// Basically, we want to guarantee that postfix snippets always takes
+    /// precedence over everything else.
+    pub exact_postfix_snippet_match: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -195,7 +203,9 @@ impl CompletionRelevance {
         if self.is_local {
             score += 1;
         }
-
+        if self.exact_postfix_snippet_match {
+            score += 100;
+        }
         score
     }
 
@@ -272,12 +282,6 @@ pub(crate) enum CompletionKind {
     Attribute,
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum InsertTextFormat {
-    PlainText,
-    Snippet,
-}
-
 impl CompletionItem {
     pub(crate) fn new(
         completion_kind: CompletionKind,
@@ -290,7 +294,8 @@ impl CompletionItem {
             completion_kind,
             label,
             insert_text: None,
-            insert_text_format: InsertTextFormat::PlainText,
+            is_snippet: false,
+            trait_name: None,
             detail: None,
             documentation: None,
             lookup: None,
@@ -312,12 +317,12 @@ impl CompletionItem {
         self.source_range
     }
 
-    pub fn insert_text_format(&self) -> InsertTextFormat {
-        self.insert_text_format
-    }
-
     pub fn text_edit(&self) -> &TextEdit {
         &self.text_edit
+    }
+    /// Whether `text_edit` is a snippet (contains `$0` markers).
+    pub fn is_snippet(&self) -> bool {
+        self.is_snippet
     }
 
     /// Short one-line additional information, like a type
@@ -394,9 +399,10 @@ pub(crate) struct Builder {
     source_range: TextRange,
     completion_kind: CompletionKind,
     import_to_add: Option<ImportEdit>,
+    trait_name: Option<String>,
     label: String,
     insert_text: Option<String>,
-    insert_text_format: InsertTextFormat,
+    is_snippet: bool,
     detail: Option<String>,
     documentation: Option<Documentation>,
     lookup: Option<String>,
@@ -428,8 +434,11 @@ impl Builder {
             if original_path_label.ends_with(&label) {
                 label = original_path_label;
             } else {
-                format_to!(label, " ({})", original_path)
+                format_to!(label, " (use {})", original_path)
             }
+        } else if let Some(trait_name) = self.trait_name {
+            insert_text = insert_text.or_else(|| Some(label.clone()));
+            format_to!(label, " (as {})", trait_name)
         }
 
         let text_edit = match self.text_edit {
@@ -442,8 +451,8 @@ impl Builder {
         CompletionItem {
             source_range: self.source_range,
             label,
-            insert_text_format: self.insert_text_format,
             text_edit,
+            is_snippet: self.is_snippet,
             detail: self.detail,
             documentation: self.documentation,
             lookup,
@@ -464,6 +473,10 @@ impl Builder {
         self.label = label.into();
         self
     }
+    pub(crate) fn trait_name(&mut self, trait_name: impl Into<String>) -> &mut Builder {
+        self.trait_name = Some(trait_name.into());
+        self
+    }
     pub(crate) fn insert_text(&mut self, insert_text: impl Into<String>) -> &mut Builder {
         self.insert_text = Some(insert_text.into());
         self
@@ -473,7 +486,7 @@ impl Builder {
         _cap: SnippetCap,
         snippet: impl Into<String>,
     ) -> &mut Builder {
-        self.insert_text_format = InsertTextFormat::Snippet;
+        self.is_snippet = true;
         self.insert_text(snippet)
     }
     pub(crate) fn kind(&mut self, kind: impl Into<CompletionItemKind>) -> &mut Builder {
@@ -485,7 +498,7 @@ impl Builder {
         self
     }
     pub(crate) fn snippet_edit(&mut self, _cap: SnippetCap, edit: TextEdit) -> &mut Builder {
-        self.insert_text_format = InsertTextFormat::Snippet;
+        self.is_snippet = true;
         self.text_edit(edit)
     }
     pub(crate) fn detail(&mut self, detail: impl Into<String>) -> &mut Builder {
@@ -605,6 +618,13 @@ mod tests {
                 exact_name_match: true,
                 type_match: Some(CompletionRelevanceTypeMatch::Exact),
                 is_local: true,
+                ..CompletionRelevance::default()
+            }],
+            vec![CompletionRelevance {
+                exact_name_match: false,
+                type_match: None,
+                is_local: false,
+                exact_postfix_snippet_match: true,
             }],
         ];
 

@@ -21,7 +21,7 @@ use hir_def::{
 use hir_expand::{hygiene::Hygiene, name::AsName, HirFileId, InFile};
 use hir_ty::{
     diagnostics::{record_literal_missing_fields, record_pattern_missing_fields},
-    InferenceResult, Interner, Substitution, TyExt, TyLoweringContext,
+    InferenceResult, Interner, Substitution, Ty, TyExt, TyLoweringContext,
 };
 use syntax::{
     ast::{self, AstNode},
@@ -122,10 +122,40 @@ impl SourceAnalyzer {
         Type::new_with_resolver(db, &self.resolver, ty)
     }
 
+    pub(crate) fn type_of_expr_with_coercion(
+        &self,
+        db: &dyn HirDatabase,
+        expr: &ast::Expr,
+    ) -> Option<(Type, Option<Type>)> {
+        let expr_id = self.expr_id(db, expr)?;
+        let infer = self.infer.as_ref()?;
+        let coerced = infer
+            .expr_adjustments
+            .get(&expr_id)
+            .and_then(|adjusts| adjusts.last().map(|adjust| &adjust.target));
+        let mk_ty = |ty: &Ty| Type::new_with_resolver(db, &self.resolver, ty.clone());
+        mk_ty(&infer[expr_id]).map(|ty| (ty, coerced.and_then(mk_ty)))
+    }
+
     pub(crate) fn type_of_pat(&self, db: &dyn HirDatabase, pat: &ast::Pat) -> Option<Type> {
         let pat_id = self.pat_id(pat)?;
         let ty = self.infer.as_ref()?[pat_id].clone();
         Type::new_with_resolver(db, &self.resolver, ty)
+    }
+
+    pub(crate) fn type_of_pat_with_coercion(
+        &self,
+        db: &dyn HirDatabase,
+        pat: &ast::Pat,
+    ) -> Option<(Type, Option<Type>)> {
+        let pat_id = self.pat_id(pat)?;
+        let infer = self.infer.as_ref()?;
+        let coerced = infer
+            .pat_adjustments
+            .get(&pat_id)
+            .and_then(|adjusts| adjusts.last().map(|adjust| &adjust.target));
+        let mk_ty = |ty: &Ty| Type::new_with_resolver(db, &self.resolver, ty.clone());
+        mk_ty(&infer[pat_id]).map(|ty| (ty, coerced.and_then(mk_ty)))
     }
 
     pub(crate) fn type_of_self(

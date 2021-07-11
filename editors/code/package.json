@@ -120,6 +120,11 @@
                 "category": "Rust Analyzer"
             },
             {
+                "command": "rust-analyzer.viewFullCrateGraph",
+                "title": "View Crate Graph (Full)",
+                "category": "Rust Analyzer"
+            },
+            {
                 "command": "rust-analyzer.expandMacro",
                 "title": "Expand macro recursively",
                 "category": "Rust Analyzer"
@@ -716,6 +721,21 @@
                 },
                 "rust-analyzer.inlayHints.typeHints": {
                     "markdownDescription": "Whether to show inlay type hints for variables.",
+                    "default": true,
+                    "type": "boolean"
+                },
+                "rust-analyzer.joinLines.joinElseIf": {
+                    "markdownDescription": "Join lines inserts else between consecutive ifs.",
+                    "default": true,
+                    "type": "boolean"
+                },
+                "rust-analyzer.joinLines.removeTrailingComma": {
+                    "markdownDescription": "Join lines removes trailing commas.",
+                    "default": true,
+                    "type": "boolean"
+                },
+                "rust-analyzer.joinLines.unwrapTrivialBlock": {
+                    "markdownDescription": "Join lines unwraps trivial blocks.",
                     "default": true,
                     "type": "boolean"
                 },

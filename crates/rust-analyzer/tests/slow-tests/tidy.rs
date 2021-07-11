@@ -5,36 +5,19 @@ use std::{
 
 use xshell::{cmd, pushd, pushenv, read_file};
 
-use crate::{cargo_files, codegen, project_root, rust_files};
-
-#[test]
-fn generate_grammar() {
-    codegen::generate_syntax().unwrap()
-}
-
-#[test]
-fn generate_parser_tests() {
-    codegen::generate_parser_tests().unwrap()
-}
-
-#[test]
-fn generate_assists_tests() {
-    codegen::generate_assists_tests().unwrap();
-}
-
-/// This clones rustc repo, and so is not worth to keep up-to-date. We update
-/// manually by un-ignoring the test from time to time.
-#[test]
-#[ignore]
-fn generate_lint_completions() {
-    codegen::generate_lint_completions().unwrap()
-}
-
 #[test]
 fn check_code_formatting() {
-    let _dir = pushd(project_root()).unwrap();
+    let _dir = pushd(sourcegen::project_root()).unwrap();
     let _e = pushenv("RUSTUP_TOOLCHAIN", "stable");
-    crate::ensure_rustfmt().unwrap();
+
+    let out = cmd!("rustfmt --version").read().unwrap();
+    if !out.contains("stable") {
+        panic!(
+            "Failed to run rustfmt from toolchain 'stable'. \
+                 Please run `rustup component add rustfmt --toolchain stable` to install it.",
+        )
+    }
+
     let res = cmd!("cargo fmt -- --check").run();
     if res.is_err() {
         let _ = cmd!("cargo fmt").run();
@@ -43,21 +26,17 @@ fn check_code_formatting() {
 }
 
 #[test]
-fn smoke_test_generate_documentation() {
-    codegen::docs().unwrap()
-}
-
-#[test]
 fn check_lsp_extensions_docs() {
     let expected_hash = {
         let lsp_ext_rs =
-            read_file(project_root().join("crates/rust-analyzer/src/lsp_ext.rs")).unwrap();
+            read_file(sourcegen::project_root().join("crates/rust-analyzer/src/lsp_ext.rs"))
+                .unwrap();
         stable_hash(lsp_ext_rs.as_str())
     };
 
     let actual_hash = {
         let lsp_extensions_md =
-            read_file(project_root().join("docs/dev/lsp-extensions.md")).unwrap();
+            read_file(sourcegen::project_root().join("docs/dev/lsp-extensions.md")).unwrap();
         let text = lsp_extensions_md
             .lines()
             .find_map(|line| line.strip_prefix("lsp_ext.rs hash:"))
@@ -82,68 +61,78 @@ Please adjust docs/dev/lsp-extensions.md.
 }
 
 #[test]
-fn rust_files_are_tidy() {
+fn files_are_tidy() {
+    let files = sourcegen::list_files(&sourcegen::project_root().join("crates"));
+
     let mut tidy_docs = TidyDocs::default();
     let mut tidy_marks = TidyMarks::default();
-    for path in rust_files() {
-        let text = read_file(&path).unwrap();
-        check_todo(&path, &text);
-        check_dbg(&path, &text);
-        check_test_attrs(&path, &text);
-        check_trailing_ws(&path, &text);
-        deny_clippy(&path, &text);
-        tidy_docs.visit(&path, &text);
-        tidy_marks.visit(&path, &text);
+    for path in files {
+        let extension = path.extension().unwrap_or_default().to_str().unwrap_or_default();
+        match extension {
+            "rs" => {
+                let text = read_file(&path).unwrap();
+                check_todo(&path, &text);
+                check_dbg(&path, &text);
+                check_test_attrs(&path, &text);
+                check_trailing_ws(&path, &text);
+                deny_clippy(&path, &text);
+                tidy_docs.visit(&path, &text);
+                tidy_marks.visit(&path, &text);
+            }
+            "toml" => {
+                let text = read_file(&path).unwrap();
+                check_cargo_toml(&path, text);
+            }
+            _ => (),
+        }
     }
+
     tidy_docs.finish();
     tidy_marks.finish();
 }
 
-#[test]
-fn cargo_files_are_tidy() {
-    for cargo in cargo_files() {
-        let mut section = None;
-        for (line_no, text) in read_file(&cargo).unwrap().lines().enumerate() {
-            let text = text.trim();
-            if text.starts_with('[') {
-                if !text.ends_with(']') {
+fn check_cargo_toml(path: &Path, text: String) -> () {
+    let mut section = None;
+    for (line_no, text) in text.lines().enumerate() {
+        let text = text.trim();
+        if text.starts_with('[') {
+            if !text.ends_with(']') {
+                panic!(
+                    "\nplease don't add comments or trailing whitespace in section lines.\n\
+                        {}:{}\n",
+                    path.display(),
+                    line_no + 1
+                )
+            }
+            section = Some(text);
+            continue;
+        }
+        let text: String = text.split_whitespace().collect();
+        if !text.contains("path=") {
+            continue;
+        }
+        match section {
+            Some(s) if s.contains("dev-dependencies") => {
+                if text.contains("version") {
                     panic!(
-                        "\nplease don't add comments or trailing whitespace in section lines.\n\
-                            {}:{}\n",
-                        cargo.display(),
+                        "\ncargo internal dev-dependencies should not have a version.\n\
+                        {}:{}\n",
+                        path.display(),
                         line_no + 1
-                    )
+                    );
                 }
-                section = Some(text);
-                continue;
             }
-            let text: String = text.split_whitespace().collect();
-            if !text.contains("path=") {
-                continue;
-            }
-            match section {
-                Some(s) if s.contains("dev-dependencies") => {
-                    if text.contains("version") {
-                        panic!(
-                            "\ncargo internal dev-dependencies should not have a version.\n\
-                            {}:{}\n",
-                            cargo.display(),
-                            line_no + 1
-                        );
-                    }
+            Some(s) if s.contains("dependencies") => {
+                if !text.contains("version") {
+                    panic!(
+                        "\ncargo internal dependencies should have a version.\n\
+                        {}:{}\n",
+                        path.display(),
+                        line_no + 1
+                    );
                 }
-                Some(s) if s.contains("dependencies") => {
-                    if !text.contains("version") {
-                        panic!(
-                            "\ncargo internal dependencies should have a version.\n\
-                            {}:{}\n",
-                            cargo.display(),
-                            line_no + 1
-                        );
-                    }
-                }
-                _ => {}
             }
+            _ => {}
         }
     }
 }
@@ -312,7 +301,7 @@ fn check_todo(path: &Path, text: &str) {
 fn check_dbg(path: &Path, text: &str) {
     let need_dbg = &[
         // This file itself obviously needs to use dbg.
-        "tests/tidy.rs",
+        "slow-tests/tidy.rs",
         // Assists to remove `dbg!()`
         "handlers/remove_dbg.rs",
         // We have .dbg postfix
@@ -339,11 +328,15 @@ fn check_test_attrs(path: &Path, text: &str) {
     let ignore_rule =
         "https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/dev/style.md#ignore";
     let need_ignore: &[&str] = &[
-        // Special case to run `#[ignore]` tests
+        // This file.
+        "slow-tests/tidy.rs",
+        // Special case to run `#[ignore]` tests.
         "ide/src/runnables.rs",
         // A legit test which needs to be ignored, as it takes too long to run
         // :(
         "hir_def/src/nameres/collector.rs",
+        // Long sourcegen test to generate lint completions.
+        "ide_completion/src/tests/sourcegen.rs",
         // Obviously needs ignore.
         "ide_assists/src/handlers/toggle_ignore.rs",
         // See above.
@@ -355,7 +348,11 @@ fn check_test_attrs(path: &Path, text: &str) {
 
     let panic_rule =
         "https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/dev/style.md#should_panic";
-    let need_panic: &[&str] = &["test_utils/src/fixture.rs"];
+    let need_panic: &[&str] = &[
+        // This file.
+        "slow-tests/tidy.rs",
+        "test_utils/src/fixture.rs",
+    ];
     if text.contains("#[should_panic") && !need_panic.iter().any(|p| path.ends_with(p)) {
         panic!(
             "\ndon't add `#[should_panic]` tests, see:\n\n    {}\n\n   {}\n",
@@ -439,7 +436,7 @@ impl TidyDocs {
 }
 
 fn is_exclude_dir(p: &Path, dirs_to_exclude: &[&str]) -> bool {
-    p.strip_prefix(project_root())
+    p.strip_prefix(sourcegen::project_root())
         .unwrap()
         .components()
         .rev()

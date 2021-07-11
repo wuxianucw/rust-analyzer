@@ -3,7 +3,6 @@ name = "flycheck"
 version = "0.0.0"
 description = "TBD"
 license = "MIT OR Apache-2.0"
-authors = ["rust-analyzer developers"]
 edition = "2018"
 
 [lib]
@@ -12,7 +11,7 @@ doctest = false
 [dependencies]
 crossbeam-channel = "0.5.0"
 log = "0.4.8"
-cargo_metadata = "0.13"
+cargo_metadata = "0.14"
 serde = { version = "1.0.106", features = ["derive"] }
 serde_json = "1.0.48"
 jod-thread = "0.1.1"

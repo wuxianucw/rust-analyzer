@@ -46,8 +46,8 @@ pub struct AnnotationConfig {
 
 pub(crate) fn annotations(
     db: &RootDatabase,
+    config: &AnnotationConfig,
     file_id: FileId,
-    config: AnnotationConfig,
 ) -> Vec<Annotation> {
     let mut annotations = Vec::default();
 
@@ -190,8 +190,7 @@ mod tests {
 
         let annotations: Vec<Annotation> = analysis
             .annotations(
-                file_id,
-                AnnotationConfig {
+                &AnnotationConfig {
                     binary_target: true,
                     annotate_runnables: true,
                     annotate_impls: true,
@@ -200,6 +199,7 @@ mod tests {
                     run: true,
                     debug: true,
                 },
+                file_id,
             )
             .unwrap()
             .into_iter()
@@ -862,6 +862,7 @@ mod tests {
                                     focus_range: 18..23,
                                     name: "tests",
                                     kind: Module,
+                                    description: "mod tests",
                                 },
                                 kind: TestMod {
                                     path: "tests",
@@ -883,6 +884,7 @@ mod tests {
                                     focus_range: 18..23,
                                     name: "tests",
                                     kind: Module,
+                                    description: "mod tests",
                                 },
                                 kind: TestMod {
                                     path: "tests",

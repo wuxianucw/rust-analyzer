@@ -383,14 +383,19 @@ impl NameRefClass {
                     }
                 }
             }
-
-            if let Some(resolved) = sema.resolve_path(&path) {
-                return if path.syntax().ancestors().find_map(ast::Attr::cast).is_some() {
+            let top_path = path.top_path();
+            let is_attribute_path = top_path
+                .syntax()
+                .ancestors()
+                .find_map(ast::Attr::cast)
+                .map(|attr| attr.path().as_ref() == Some(&top_path));
+            return match is_attribute_path {
+                Some(true) => sema.resolve_path(&path).and_then(|resolved| {
                     match resolved {
                         // Don't wanna collide with builtin attributes here like `test` hence guard
-                        PathResolution::Def(module @ ModuleDef::Module(_))
-                            if path.parent_path().is_some() =>
-                        {
+                        // so only resolve to modules that aren't the last segment
+                        PathResolution::Def(module @ ModuleDef::Module(_)) if path != top_path => {
+                            cov_mark::hit!(name_ref_classify_attr_path_qualifier);
                             Some(NameRefClass::Definition(Definition::ModuleDef(module)))
                         }
                         PathResolution::Macro(mac) if mac.kind() == hir::MacroKind::Attr => {
@@ -398,10 +403,10 @@ impl NameRefClass {
                         }
                         _ => None,
                     }
-                } else {
-                    Some(NameRefClass::Definition(resolved.into()))
-                };
-            }
+                }),
+                Some(false) => None,
+                None => sema.resolve_path(&path).map(Into::into).map(NameRefClass::Definition),
+            };
         }
 
         let extern_crate = ast::ExternCrate::cast(parent)?;

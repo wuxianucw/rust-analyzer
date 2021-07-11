@@ -49,6 +49,10 @@ impl ast::BlockExpr {
     pub fn items(&self) -> AstChildren<ast::Item> {
         support::children(self.syntax())
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.statements().next().is_none() && self.tail_expr().is_none()
+    }
 }
 
 impl ast::Expr {
@@ -335,6 +339,14 @@ impl ast::Path {
 
     pub fn qualifiers(&self) -> impl Iterator<Item = ast::Path> + Clone {
         successors(self.qualifier(), |p| p.qualifier())
+    }
+
+    pub fn top_path(&self) -> ast::Path {
+        let mut this = self.clone();
+        while let Some(path) = this.parent_path() {
+            this = path;
+        }
+        this
     }
 }
 
@@ -626,6 +638,15 @@ impl ast::SlicePat {
         let suffix = args.collect();
 
         SlicePatComponents { prefix, slice, suffix }
+    }
+}
+
+impl ast::IdentPat {
+    pub fn is_simple_ident(&self) -> bool {
+        self.at_token().is_none()
+            && self.mut_token().is_none()
+            && self.ref_token().is_none()
+            && self.pat().is_none()
     }
 }
 

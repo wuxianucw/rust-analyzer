@@ -85,7 +85,7 @@ mod handlers {
     mod generate_new;
     mod generate_setter;
     mod infer_function_return_type;
-    mod inline_function;
+    mod inline_call;
     mod inline_local_variable;
     mod introduce_named_lifetime;
     mod invert_if;
@@ -109,7 +109,6 @@ mod handlers {
     mod replace_let_with_if_let;
     mod replace_qualified_name_with_use;
     mod replace_string_with_char;
-    mod replace_unwrap_with_match;
     mod split_import;
     mod toggle_ignore;
     mod unmerge_use;
@@ -155,7 +154,7 @@ mod handlers {
             generate_new::generate_new,
             generate_setter::generate_setter,
             infer_function_return_type::infer_function_return_type,
-            inline_function::inline_function,
+            inline_call::inline_call,
             inline_local_variable::inline_local_variable,
             introduce_named_lifetime::introduce_named_lifetime,
             invert_if::invert_if,
@@ -182,7 +181,6 @@ mod handlers {
             replace_impl_trait_with_generic::replace_impl_trait_with_generic,
             replace_let_with_if_let::replace_let_with_if_let,
             replace_qualified_name_with_use::replace_qualified_name_with_use,
-            replace_unwrap_with_match::replace_unwrap_with_match,
             split_import::split_import,
             toggle_ignore::toggle_ignore,
             unmerge_use::unmerge_use,
