@@ -46,7 +46,6 @@ pub(super) fn element(
             };
 
             match name_kind {
-                Some(NameClass::ExternCrate(_)) => SymbolKind::Module.into(),
                 Some(NameClass::Definition(def)) => {
                     let mut h = highlight_def(db, krate, def) | HlMod::Definition;
                     if let Definition::ModuleDef(hir::ModuleDef::Trait(trait_)) = &def {
@@ -59,10 +58,8 @@ pub(super) fn element(
                 Some(NameClass::ConstReference(def)) => highlight_def(db, krate, def),
                 Some(NameClass::PatFieldShorthand { field_ref, .. }) => {
                     let mut h = HlTag::Symbol(SymbolKind::Field).into();
-                    if let Definition::Field(field) = field_ref {
-                        if let hir::VariantDef::Union(_) = field.parent_def(db) {
-                            h |= HlMod::Unsafe;
-                        }
+                    if let hir::VariantDef::Union(_) = field_ref.parent_def(db) {
+                        h |= HlMod::Unsafe;
                     }
                     h
                 }
@@ -111,7 +108,6 @@ pub(super) fn element(
                     }
                 };
                 let h = match name_class {
-                    NameRefClass::ExternCrate(_) => SymbolKind::Module.into(),
                     NameRefClass::Definition(def) => {
                         if let Definition::Local(local) = &def {
                             if let Some(name) = local.name(db) {
