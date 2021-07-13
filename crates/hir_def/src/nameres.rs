@@ -72,6 +72,7 @@ use crate::{
     nameres::{diagnostics::DefDiagnostic, path_resolution::ResolveMode},
     path::ModPath,
     per_ns::PerNs,
+    visibility::Visibility,
     AstId, BlockId, BlockLoc, LocalModuleId, ModuleDefId, ModuleId,
 };
 
@@ -145,12 +146,6 @@ pub enum ModuleOrigin {
     },
 }
 
-impl Default for ModuleOrigin {
-    fn default() -> Self {
-        ModuleOrigin::CrateRoot { definition: FileId(0) }
-    }
-}
-
 impl ModuleOrigin {
     fn declaration(&self) -> Option<AstId<ast::Module>> {
         match self {
@@ -196,14 +191,16 @@ impl ModuleOrigin {
     }
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ModuleData {
+    /// Where does this module come from?
+    pub origin: ModuleOrigin,
+    /// Declared visibility of this module.
+    pub visibility: Visibility,
+
     pub parent: Option<LocalModuleId>,
     pub children: FxHashMap<Name, LocalModuleId>,
     pub scope: ItemScope,
-
-    /// Where does this module come from?
-    pub origin: ModuleOrigin,
 }
 
 impl DefMap {
@@ -211,9 +208,14 @@ impl DefMap {
         let _p = profile::span("crate_def_map_query").detail(|| {
             db.crate_graph()[krate].display_name.as_deref().unwrap_or_default().to_string()
         });
-        let edition = db.crate_graph()[krate].edition;
-        let def_map = DefMap::empty(krate, edition);
+
+        let crate_graph = db.crate_graph();
+
+        let edition = crate_graph[krate].edition;
+        let origin = ModuleOrigin::CrateRoot { definition: crate_graph[krate].root_file_id };
+        let def_map = DefMap::empty(krate, edition, origin);
         let def_map = collector::collect_defs(db, def_map, None);
+
         Arc::new(def_map)
     }
 
@@ -231,16 +233,28 @@ impl DefMap {
         let block_info = BlockInfo { block: block_id, parent: block.module };
 
         let parent_map = block.module.def_map(db);
-        let mut def_map = DefMap::empty(block.module.krate, parent_map.edition);
+        let mut def_map = DefMap::empty(
+            block.module.krate,
+            parent_map.edition,
+            ModuleOrigin::BlockExpr { block: block.ast_id },
+        );
         def_map.block = Some(block_info);
 
         let def_map = collector::collect_defs(db, def_map, Some(block.ast_id));
         Some(Arc::new(def_map))
     }
 
-    fn empty(krate: CrateId, edition: Edition) -> DefMap {
+    fn empty(krate: CrateId, edition: Edition, root_module_origin: ModuleOrigin) -> DefMap {
         let mut modules: Arena<ModuleData> = Arena::default();
-        let root = modules.alloc(ModuleData::default());
+
+        let local_id = LocalModuleId::from_raw(la_arena::RawIdx::from(0));
+        // NB: we use `None` as block here, which would be wrong for implicit
+        // modules declared by blocks with items. At the moment, we don't use
+        // this visibility for anything outside IDE, so that's probably OK.
+        let visibility = Visibility::Module(ModuleId { krate, local_id, block: None });
+        let root = modules.alloc(ModuleData::new(root_module_origin, visibility));
+        assert_eq!(local_id, root);
+
         DefMap {
             _c: Count::new(),
             block: None,
@@ -445,6 +459,16 @@ impl DefMap {
 }
 
 impl ModuleData {
+    pub(crate) fn new(origin: ModuleOrigin, visibility: Visibility) -> Self {
+        ModuleData {
+            origin,
+            visibility,
+            parent: None,
+            children: FxHashMap::default(),
+            scope: ItemScope::default(),
+        }
+    }
+
     /// Returns a node which defines this module. That is, a file or a `mod foo {}` with items.
     pub fn definition_source(&self, db: &dyn DefDatabase) -> InFile<ModuleSource> {
         self.origin.definition_source(db)
