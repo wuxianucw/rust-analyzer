@@ -57,7 +57,7 @@ jobs:
       run: cargo test --no-run --locked
 
     - name: Test
-      run: cargo test --exclude "tidy::check_merge_commits" -- --nocapture
+      run: cargo test --workspace --exclude "tidy::check_merge_commits" -- --nocapture
 
   # Weird targets to catch non-portable code
   rust-cross:
