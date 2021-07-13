@@ -138,6 +138,7 @@ fn check_cargo_toml(path: &Path, text: String) -> () {
 }
 
 #[test]
+#[ignore]
 fn check_merge_commits() {
     let stdout = cmd!("git rev-list --merges --invert-grep --author 'bors\\[bot\\]' HEAD~19..")
         .read()
