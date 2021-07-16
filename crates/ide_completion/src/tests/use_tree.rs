@@ -1,4 +1,4 @@
-//! Completions tests for use trees.
+//! Completion tests for use trees.
 use expect_test::{expect, Expect};
 
 use crate::tests::completion_list;
@@ -250,6 +250,22 @@ use {$0};
             kw self::
             kw super::
             kw crate::
+        "#]],
+    );
+}
+
+#[test]
+fn impl_prefix_does_not_add_fn_snippet() {
+    // regression test for 7222
+    check(
+        r#"
+mod foo {
+    pub fn bar(x: u32) {}
+}
+use self::foo::impl$0
+"#,
+        expect![[r#"
+            fn bar fn(u32)
         "#]],
     );
 }
