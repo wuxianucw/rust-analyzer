@@ -1,10 +1,11 @@
 name: release
 on:
-  schedule:
-  - cron: '0 0 * * *' # midnight UTC
+  # schedule:
+  # - cron: '0 0 * * *' # midnight UTC
 
   push:
     branches:
+    - master
     - release
     - trigger-nightly
     
