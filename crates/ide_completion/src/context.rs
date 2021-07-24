@@ -1,5 +1,6 @@
 //! See `CompletionContext` structure.
 
+use base_db::SourceDatabaseExt;
 use hir::{Local, ScopeDef, Semantics, SemanticsScope, Type};
 use ide_db::{
     base_db::{FilePosition, SourceDatabase},
@@ -353,8 +354,46 @@ impl<'a> CompletionContext<'a> {
         matches!(self.path_context, Some(PathCompletionContext { is_trivial_path: true, .. }))
     }
 
+    pub(crate) fn is_non_trivial_path(&self) -> bool {
+        matches!(self.path_context, Some(PathCompletionContext { is_trivial_path: false, .. }))
+    }
+
     pub(crate) fn path_qual(&self) -> Option<&ast::Path> {
         self.path_context.as_ref().and_then(|it| it.qualifier.as_ref())
+    }
+
+    /// Checks if an item is visible and not `doc(hidden)` at the completion site.
+    pub(crate) fn is_visible<I>(&self, item: &I) -> bool
+    where
+        I: hir::HasVisibility + hir::HasAttrs + hir::HasCrate + Copy,
+    {
+        self.is_visible_impl(&item.visibility(self.db), &item.attrs(self.db), item.krate(self.db))
+    }
+
+    fn is_visible_impl(
+        &self,
+        vis: &hir::Visibility,
+        attrs: &hir::Attrs,
+        defining_crate: hir::Crate,
+    ) -> bool {
+        let module = match self.scope.module() {
+            Some(it) => it,
+            None => return false,
+        };
+        if !vis.is_visible_from(self.db, module.into()) {
+            // If the definition location is editable, also show private items
+            let root_file = defining_crate.root_file(self.db);
+            let source_root_id = self.db.file_source_root(root_file);
+            let is_editable = !self.db.source_root(source_root_id).is_library;
+            return is_editable;
+        }
+
+        if module.krate() != defining_crate && attrs.has_doc_hidden() {
+            // `doc(hidden)` items are only completed within the defining crate.
+            return false;
+        }
+
+        true
     }
 
     fn fill_impl_def(&mut self) {

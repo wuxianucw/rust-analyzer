@@ -4,13 +4,13 @@
 //! but we can't process `.rlib` and need source code instead. The source code
 //! is typically installed with `rustup component add rust-src` command.
 
-use std::{convert::TryFrom, env, ops, path::PathBuf, process::Command};
+use std::{convert::TryFrom, env, fs, ops, path::PathBuf, process::Command};
 
 use anyhow::{format_err, Result};
 use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
 
-use crate::utf8_stdout;
+use crate::{utf8_stdout, ManifestPath};
 
 #[derive(Default, Debug, Clone, Eq, PartialEq)]
 pub struct Sysroot {
@@ -22,7 +22,7 @@ pub(crate) type SysrootCrate = Idx<SysrootCrateData>;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SysrootCrateData {
     pub name: String,
-    pub root: AbsPathBuf,
+    pub root: ManifestPath,
     pub deps: Vec<SysrootCrate>,
 }
 
@@ -48,20 +48,17 @@ impl Sysroot {
         self.crates.iter().map(|(id, _data)| id)
     }
 
-    pub fn discover(cargo_toml: &AbsPath) -> Result<Sysroot> {
-        log::debug!("Discovering sysroot for {}", cargo_toml.display());
-        let current_dir = cargo_toml.parent().ok_or_else(|| {
-            format_err!("Failed to find the parent directory for {}", cargo_toml.display())
-        })?;
-        let sysroot_dir = discover_sysroot_dir(current_dir)?;
-        let sysroot_src_dir = discover_sysroot_src_dir(&sysroot_dir, current_dir)?;
+    pub fn discover(dir: &AbsPath) -> Result<Sysroot> {
+        log::debug!("Discovering sysroot for {}", dir.display());
+        let sysroot_dir = discover_sysroot_dir(dir)?;
+        let sysroot_src_dir = discover_sysroot_src_dir(&sysroot_dir, dir)?;
         let res = Sysroot::load(&sysroot_src_dir)?;
         Ok(res)
     }
 
-    pub fn discover_rustc(cargo_toml: &AbsPath) -> Option<AbsPathBuf> {
+    pub fn discover_rustc(cargo_toml: &ManifestPath) -> Option<ManifestPath> {
         log::debug!("Discovering rustc source for {}", cargo_toml.display());
-        let current_dir = cargo_toml.parent().unwrap();
+        let current_dir = cargo_toml.parent();
         discover_sysroot_dir(current_dir).ok().and_then(|sysroot_dir| get_rustc_src(&sysroot_dir))
     }
 
@@ -73,7 +70,8 @@ impl Sysroot {
             let root = [format!("{}/src/lib.rs", path), format!("lib{}/lib.rs", path)]
                 .iter()
                 .map(|it| sysroot_src_dir.join(it))
-                .find(|it| it.exists());
+                .filter_map(|it| ManifestPath::try_from(it).ok())
+                .find(|it| fs::metadata(it).is_ok());
 
             if let Some(root) = root {
                 sysroot.crates.alloc(SysrootCrateData {
@@ -142,7 +140,7 @@ fn discover_sysroot_src_dir(
         let path = AbsPathBuf::try_from(path.as_str())
             .map_err(|path| format_err!("RUST_SRC_PATH must be absolute: {}", path.display()))?;
         let core = path.join("core");
-        if core.exists() {
+        if fs::metadata(&core).is_ok() {
             log::debug!("Discovered sysroot by RUST_SRC_PATH: {}", path.display());
             return Ok(path);
         }
@@ -168,10 +166,11 @@ try installing the Rust source the same way you installed rustc",
         })
 }
 
-fn get_rustc_src(sysroot_path: &AbsPath) -> Option<AbsPathBuf> {
+fn get_rustc_src(sysroot_path: &AbsPath) -> Option<ManifestPath> {
     let rustc_src = sysroot_path.join("lib/rustlib/rustc-src/rust/compiler/rustc/Cargo.toml");
+    let rustc_src = ManifestPath::try_from(rustc_src).ok()?;
     log::debug!("Checking for rustc source code: {}", rustc_src.display());
-    if rustc_src.exists() {
+    if fs::metadata(&rustc_src).is_ok() {
         Some(rustc_src)
     } else {
         None
@@ -182,13 +181,7 @@ fn get_rust_src(sysroot_path: &AbsPath) -> Option<AbsPathBuf> {
     // Try the new path first since the old one still exists.
     let rust_src = sysroot_path.join("lib/rustlib/src/rust");
     log::debug!("Checking sysroot (looking for `library` and `src` dirs): {}", rust_src.display());
-    ["library", "src"].iter().map(|it| rust_src.join(it)).find(|it| it.exists())
-}
-
-impl SysrootCrateData {
-    pub fn root_dir(&self) -> &AbsPath {
-        self.root.parent().unwrap()
-    }
+    ["library", "src"].iter().map(|it| rust_src.join(it)).find(|it| fs::metadata(it).is_ok())
 }
 
 const SYSROOT_CRATES: &str = "

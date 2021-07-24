@@ -1,10 +1,10 @@
 //! Completion tests for predicates and bounds.
 use expect_test::{expect, Expect};
 
-use crate::tests::{completion_list, BASE_FIXTURE};
+use crate::tests::{completion_list, BASE_ITEMS_FIXTURE};
 
 fn check(ra_fixture: &str, expect: Expect) {
-    let actual = completion_list(&format!("{}\n{}", BASE_FIXTURE, ra_fixture));
+    let actual = completion_list(&format!("{}\n{}", BASE_ITEMS_FIXTURE, ra_fixture));
     expect.assert_eq(&actual)
 }
 
@@ -27,6 +27,7 @@ struct Foo<'lt, T, const C: usize> where $0 {}
             st Foo<…>
             st Unit
             ma makro!(…) #[macro_export] macro_rules! makro
+            un Union
             ma makro!(…) #[macro_export] macro_rules! makro
             bt u32
         "##]],
@@ -35,7 +36,6 @@ struct Foo<'lt, T, const C: usize> where $0 {}
 
 #[test]
 fn bound_for_type_pred() {
-    // FIXME: only show traits, macros and modules
     check(
         r#"
 struct Foo<'lt, T, const C: usize> where T: $0 {}
@@ -54,7 +54,8 @@ struct Foo<'lt, T, const C: usize> where T: $0 {}
 
 #[test]
 fn bound_for_lifetime_pred() {
-    // FIXME: should only show lifetimes here
+    // FIXME: should only show lifetimes here, that is we shouldn't get any completions here when not typing
+    // a `'`
     check(
         r#"
 struct Foo<'lt, T, const C: usize> where 'lt: $0 {}
@@ -107,6 +108,7 @@ struct Foo<'lt, T, const C: usize> where for<'a> $0 {}
             st Foo<…>
             st Unit
             ma makro!(…) #[macro_export] macro_rules! makro
+            un Union
             ma makro!(…) #[macro_export] macro_rules! makro
             bt u32
         "##]],
@@ -130,9 +132,10 @@ impl Record {
             en Enum
             st Record
             st Tuple
-            ma makro!(…) #[macro_export] macro_rules! makro
             md module
             st Unit
+            ma makro!(…) #[macro_export] macro_rules! makro
+            un Union
             ma makro!(…) #[macro_export] macro_rules! makro
             bt u32
         "##]],

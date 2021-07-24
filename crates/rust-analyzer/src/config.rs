@@ -11,8 +11,8 @@ use std::{ffi::OsString, iter, path::PathBuf};
 
 use flycheck::FlycheckConfig;
 use ide::{
-    AssistConfig, CompletionConfig, DiagnosticsConfig, HoverConfig, HoverDocFormat,
-    InlayHintsConfig, JoinLinesConfig,
+    AssistConfig, CompletionConfig, DiagnosticsConfig, HighlightRelatedConfig, HoverConfig,
+    HoverDocFormat, InlayHintsConfig, JoinLinesConfig,
 };
 use ide_db::helpers::{
     insert_use::{ImportGranularity, InsertUseConfig, PrefixKind},
@@ -142,8 +142,19 @@ config_data! {
 
         /// Controls file watching implementation.
         files_watcher: String = "\"client\"",
-        /// These directories will be ignored by rust-analyzer.
+        /// These directories will be ignored by rust-analyzer. They are
+        /// relative to the workspace root, and globs are not supported. You may
+        /// also need to add the folders to Code's `files.watcherExclude`.
         files_excludeDirs: Vec<PathBuf> = "[]",
+
+        /// Enables highlighting of related references while hovering your mouse above any identifier.
+        highlightRelated_references: bool = "true",
+        /// Enables highlighting of all exit points while hovering your mouse above any `return`, `?`, or return type arrow (`->`).
+        highlightRelated_exitPoints: bool = "true",
+        /// Enables highlighting of related references while hovering your mouse `break`, `loop`, `while`, or `for` keywords.
+        highlightRelated_breakPoints: bool = "true",
+        /// Enables highlighting of all break points for a loop or block context while hovering your mouse above any `async` or `await` keywords.
+        highlightRelated_yieldPoints: bool = "true",
 
         /// Use semantic tokens for strings.
         ///
@@ -597,12 +608,14 @@ impl Config {
     pub fn lru_capacity(&self) -> Option<usize> {
         self.data.lruCapacity
     }
-    pub fn proc_macro_srv(&self) -> Option<(PathBuf, Vec<OsString>)> {
+    pub fn proc_macro_srv(&self) -> Option<(AbsPathBuf, Vec<OsString>)> {
         if !self.data.procMacro_enable {
             return None;
         }
-
-        let path = self.data.procMacro_server.clone().or_else(|| std::env::current_exe().ok())?;
+        let path = match &self.data.procMacro_server {
+            Some(it) => self.root_path.join(it),
+            None => AbsPathBuf::assert(std::env::current_exe().ok()?),
+        };
         Some((path, vec!["proc-macro".into()]))
     }
     pub fn expand_proc_attr_macros(&self) -> bool {
@@ -626,9 +639,6 @@ impl Config {
     pub fn run_build_scripts(&self) -> bool {
         self.data.cargo_runBuildScripts || self.data.procMacro_enable
     }
-    pub fn wrap_rustc(&self) -> bool {
-        self.data.cargo_useRustcWrapperForBuildScripts
-    }
     pub fn cargo(&self) -> CargoConfig {
         let rustc_source = self.data.rustcSource.as_ref().map(|rustc_src| {
             if rustc_src == "discover" {
@@ -646,6 +656,7 @@ impl Config {
             rustc_source,
             no_sysroot: self.data.cargo_noSysroot,
             unset_test_crates: self.data.cargo_unsetTest.clone(),
+            wrap_rustc_in_build_scripts: self.data.cargo_useRustcWrapperForBuildScripts,
         }
     }
 
@@ -849,6 +860,15 @@ impl Config {
                 .insert_replace_support?,
             false
         )
+    }
+
+    pub fn highlight_related(&self) -> HighlightRelatedConfig {
+        HighlightRelatedConfig {
+            references: self.data.highlightRelated_references,
+            break_points: self.data.highlightRelated_breakPoints,
+            exit_points: self.data.highlightRelated_exitPoints,
+            yield_points: self.data.highlightRelated_yieldPoints,
+        }
     }
 }
 

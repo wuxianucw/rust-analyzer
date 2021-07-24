@@ -10,8 +10,8 @@ use hir::{
     PathResolution, Semantics, Visibility,
 };
 use syntax::{
-    ast::{self, AstNode, PathSegmentKind},
-    match_ast, SyntaxKind, SyntaxNode,
+    ast::{self, AstNode},
+    match_ast, SyntaxKind,
 };
 
 use crate::RootDatabase;
@@ -44,19 +44,7 @@ impl Definition {
     pub fn visibility(&self, db: &RootDatabase) -> Option<Visibility> {
         match self {
             Definition::Field(sf) => Some(sf.visibility(db)),
-            Definition::ModuleDef(def) => match def {
-                ModuleDef::Module(it) => Some(it.visibility(db)),
-                ModuleDef::Function(it) => Some(it.visibility(db)),
-                ModuleDef::Adt(it) => Some(it.visibility(db)),
-                ModuleDef::Const(it) => Some(it.visibility(db)),
-                ModuleDef::Static(it) => Some(it.visibility(db)),
-                ModuleDef::Trait(it) => Some(it.visibility(db)),
-                ModuleDef::TypeAlias(it) => Some(it.visibility(db)),
-                // NB: Variants don't have their own visibility, and just inherit
-                // one from the parent. Not sure if that's the right thing to do.
-                ModuleDef::Variant(it) => Some(it.parent_enum(db).visibility(db)),
-                ModuleDef::BuiltinType(_) => None,
-            },
+            Definition::ModuleDef(def) => Some(def.visibility(db)),
             Definition::Macro(_)
             | Definition::SelfType(_)
             | Definition::Local(_)
@@ -146,29 +134,23 @@ impl NameClass {
                     if let Some(use_tree) = it.syntax().parent().and_then(ast::UseTree::cast) {
                         let path = use_tree.path()?;
                         let path_segment = path.segment()?;
-                        let name_ref_class = path_segment
-                            .kind()
-                            .and_then(|kind| {
-                                match kind {
-                                    // The rename might be from a `self` token, so fallback to the name higher
-                                    // in the use tree.
-                                    PathSegmentKind::SelfKw => {
-                                        let use_tree = use_tree
-                                            .syntax()
-                                            .parent()
-                                            .as_ref()
-                                            // Skip over UseTreeList
-                                            .and_then(SyntaxNode::parent)
-                                            .and_then(ast::UseTree::cast)?;
-                                        let path = use_tree.path()?;
-                                        let path_segment = path.segment()?;
-                                        path_segment.name_ref()
-                                    },
-                                    PathSegmentKind::Name(name_ref) => Some(name_ref),
-                                    _ => return None,
-                                }
-                            })
-                            .and_then(|name_ref| NameRefClass::classify(sema, &name_ref))?;
+                        let name_ref = path_segment.name_ref()?;
+                        let name_ref = if name_ref.self_token().is_some() {
+                             use_tree
+                                .syntax()
+                                .parent()
+                                .as_ref()
+                                // Skip over UseTreeList
+                                .and_then(|it| {
+                                    let use_tree = it.parent().and_then(ast::UseTree::cast)?;
+                                    let path = use_tree.path()?;
+                                    let path_segment = path.segment()?;
+                                    path_segment.name_ref()
+                                }).unwrap_or(name_ref)
+                        } else {
+                            name_ref
+                        };
+                        let name_ref_class = NameRefClass::classify(sema, &name_ref)?;
 
                         Some(NameClass::Definition(match name_ref_class {
                             NameRefClass::Definition(def) => def,
@@ -353,7 +335,7 @@ impl NameRefClass {
                             hir::AssocItem::TypeAlias(it) => Some(*it),
                             _ => None,
                         })
-                        .find(|alias| &alias.name(sema.db).to_string() == &name_ref.text())
+                        .find(|alias| alias.name(sema.db).to_string() == name_ref.text())
                     {
                         return Some(NameRefClass::Definition(Definition::ModuleDef(
                             ModuleDef::TypeAlias(ty),

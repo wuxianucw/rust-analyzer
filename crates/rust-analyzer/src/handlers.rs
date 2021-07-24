@@ -769,8 +769,8 @@ pub(crate) fn handle_completion(
         snap.config.insert_replace_support(),
         completion_config.enable_imports_on_the_fly,
         &line_index,
-        text_document_position.clone(),
-        items.clone(),
+        text_document_position,
+        items,
     );
 
     let completion_list = lsp_types::CompletionList { is_incomplete: true, items };
@@ -1188,7 +1188,7 @@ pub(crate) fn handle_document_highlight(
     let position = from_proto::file_position(&snap, params.text_document_position_params)?;
     let line_index = snap.file_line_index(position.file_id)?;
 
-    let refs = match snap.analysis.highlight_related(position)? {
+    let refs = match snap.analysis.highlight_related(snap.config.highlight_related(), position)? {
         None => return Ok(None),
         Some(refs) => refs,
     };

@@ -1,7 +1,7 @@
 //! Completes references after dot (fields and method calls).
 
 use either::Either;
-use hir::{HasVisibility, ScopeDef};
+use hir::ScopeDef;
 use rustc_hash::FxHashSet;
 
 use crate::{context::CompletionContext, patterns::ImmediateLocation, Completions};
@@ -63,15 +63,13 @@ fn complete_fields(
 ) {
     for receiver in receiver.autoderef(ctx.db) {
         for (field, ty) in receiver.fields(ctx.db) {
-            if ctx.scope.module().map_or(false, |m| !field.is_visible_from(ctx.db, m)) {
-                // Skip private field. FIXME: If the definition location of the
-                // field is editable, we should show the completion
+            if !ctx.is_visible(&field) {
                 continue;
             }
             f(Either::Left(field), ty);
         }
         for (i, ty) in receiver.tuple_fields(ctx.db).into_iter().enumerate() {
-            // FIXME: Handle visibility
+            // Tuple fields are always public (tuple struct fields are handled above).
             f(Either::Right(i), ty);
         }
     }
@@ -87,7 +85,7 @@ fn complete_methods(
         let traits_in_scope = ctx.scope.traits_in_scope();
         receiver.iterate_method_candidates(ctx.db, krate, &traits_in_scope, None, |_ty, func| {
             if func.self_param(ctx.db).is_some()
-                && ctx.scope.module().map_or(true, |m| func.is_visible_from(ctx.db, m))
+                && ctx.is_visible(&func)
                 && seen_methods.insert(func.name(ctx.db))
             {
                 f(func);
@@ -176,38 +174,127 @@ fn foo(a: A) { a.$0() }
     fn test_visibility_filtering() {
         check(
             r#"
-mod inner {
+//- /lib.rs crate:lib new_source_root:local
+pub mod m {
     pub struct A {
         private_field: u32,
         pub pub_field: u32,
         pub(crate) crate_field: u32,
-        pub(crate) super_field: u32,
+        pub(super) super_field: u32,
     }
 }
-fn foo(a: inner::A) { a.$0 }
+//- /main.rs crate:main deps:lib new_source_root:local
+fn foo(a: lib::m::A) { a.$0 }
 "#,
             expect![[r#"
-                fd pub_field   u32
-                fd crate_field u32
-                fd super_field u32
+                fd private_field u32
+                fd pub_field     u32
+                fd crate_field   u32
+                fd super_field   u32
             "#]],
         );
 
         check(
             r#"
-struct A {}
+//- /lib.rs crate:lib new_source_root:library
+pub mod m {
+    pub struct A {
+        private_field: u32,
+        pub pub_field: u32,
+        pub(crate) crate_field: u32,
+        pub(super) super_field: u32,
+    }
+}
+//- /main.rs crate:main deps:lib new_source_root:local
+fn foo(a: lib::m::A) { a.$0 }
+"#,
+            expect![[r#"
+                fd pub_field u32
+            "#]],
+        );
+
+        check(
+            r#"
+//- /lib.rs crate:lib new_source_root:library
+pub mod m {
+    pub struct A(
+        i32,
+        pub f64,
+    );
+}
+//- /main.rs crate:main deps:lib new_source_root:local
+fn foo(a: lib::m::A) { a.$0 }
+"#,
+            expect![[r#"
+                fd 1 f64
+            "#]],
+        );
+
+        check(
+            r#"
+//- /lib.rs crate:lib new_source_root:local
+pub struct A {}
 mod m {
     impl super::A {
         fn private_method(&self) {}
-        pub(crate) fn the_method(&self) {}
+        pub(crate) fn crate_method(&self) {}
+        pub fn pub_method(&self) {}
     }
 }
-fn foo(a: A) { a.$0 }
+//- /main.rs crate:main deps:lib new_source_root:local
+fn foo(a: lib::A) { a.$0 }
 "#,
             expect![[r#"
-                me the_method() fn(&self)
+                me private_method() fn(&self)
+                me crate_method()   fn(&self)
+                me pub_method()     fn(&self)
             "#]],
         );
+        check(
+            r#"
+//- /lib.rs crate:lib new_source_root:library
+pub struct A {}
+mod m {
+    impl super::A {
+        fn private_method(&self) {}
+        pub(crate) fn crate_method(&self) {}
+        pub fn pub_method(&self) {}
+    }
+}
+//- /main.rs crate:main deps:lib new_source_root:local
+fn foo(a: lib::A) { a.$0 }
+"#,
+            expect![[r#"
+                me pub_method() fn(&self)
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_doc_hidden_filtering() {
+        check(
+            r#"
+//- /lib.rs crate:lib deps:dep
+fn foo(a: dep::A) { a.$0 }
+//- /dep.rs crate:dep
+pub struct A {
+    #[doc(hidden)]
+    pub hidden_field: u32,
+    pub pub_field: u32,
+}
+
+impl A {
+    pub fn pub_method(&self) {}
+
+    #[doc(hidden)]
+    pub fn hidden_method(&self) {}
+}
+            "#,
+            expect![[r#"
+                fd pub_field    u32
+                me pub_method() fn(&self)
+            "#]],
+        )
     }
 
     #[test]
@@ -335,7 +422,24 @@ fn foo() {
                 fd 0 i32
                 fd 1 f64
             "#]],
-        )
+        );
+    }
+
+    #[test]
+    fn test_tuple_struct_field_completion() {
+        check(
+            r#"
+struct S(i32, f64);
+fn foo() {
+   let b = S(0, 3.14);
+   b.$0
+}
+"#,
+            expect![[r#"
+                fd 0 i32
+                fd 1 f64
+            "#]],
+        );
     }
 
     #[test]

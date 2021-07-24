@@ -1,18 +1,25 @@
 //! Tests and test utilities for completions.
 //!
-//! Most tests live in this module or its submodules unless for very specific completions like
-//! `attributes` or `lifetimes` where the completed concept is a distinct thing.
-//! Notable examples for completions that are being tested in this module's submodule are paths.
+//! Most tests live in this module or its submodules. The tests in these submodules are "location"
+//! oriented, that is they try to check completions for something like type position, param position
+//! etc.
+//! Tests that are more orientated towards specific completion types like visibility checks of path
+//! completions or `check_edit` tests usually live in their respective completion modules instead.
+//! This gives this test module and its submodules here the main purpose of giving the developer an
+//! overview of whats being completed where, not how.
 
 mod attribute;
+mod expression;
+mod fn_param;
 mod item_list;
 mod item;
 mod pattern;
 mod predicate;
+mod record;
+mod sourcegen;
 mod type_pos;
 mod use_tree;
-
-mod sourcegen;
+mod visibility;
 
 use std::mem;
 
@@ -33,7 +40,7 @@ use test_utils::assert_eq_text;
 use crate::{item::CompletionKind, CompletionConfig, CompletionItem};
 
 /// Lots of basic item definitions
-const BASE_FIXTURE: &str = r#"
+const BASE_ITEMS_FIXTURE: &str = r#"
 enum Enum { TupleV(u32), RecordV { field: u32 }, UnitV }
 use self::Enum::TupleV;
 mod module {}
@@ -48,6 +55,8 @@ struct Unit;
 macro_rules! makro {}
 #[rustc_builtin_macro]
 pub macro Clone {}
+fn function() {}
+union Union { field: i32 }
 "#;
 
 pub(crate) const TEST_CONFIG: CompletionConfig = CompletionConfig {
@@ -201,7 +210,7 @@ pub(crate) fn check_pattern_is_not_applicable(code: &str, check: fn(SyntaxElemen
 
 pub(crate) fn get_all_items(config: CompletionConfig, code: &str) -> Vec<CompletionItem> {
     let (db, position) = position(code);
-    crate::completions(&db, &config, position).unwrap().into()
+    crate::completions(&db, &config, position).map_or_else(Vec::default, Into::into)
 }
 
 fn check_no_completion(ra_fixture: &str) {

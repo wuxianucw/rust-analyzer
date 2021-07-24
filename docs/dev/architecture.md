@@ -3,13 +3,8 @@
 This document describes the high-level architecture of rust-analyzer.
 If you want to familiarize yourself with the code base, you are just in the right place!
 
-See also the [guide](./guide.md), which walks through a particular snapshot of rust-analyzer code base.
-
-Yet another resource is this playlist with videos about various parts of the analyzer:
-
-https://www.youtube.com/playlist?list=PL85XCvVPmGQho7MZkdW-wtPtuJcFpzycE
-
-Note that the guide and videos are pretty dated, this document should be, in general, fresher.
+You might also enjoy ["Explaining Rust Analyzer"](https://www.youtube.com/playlist?list=PLhb66M_x9UmrqXhQuIpWC5VgTdrGxMx3y) series on YouTube.
+It goes deeper than what is covered in this document, but will take some time to watch.
 
 See also these implementation-related blog posts:
 
@@ -18,6 +13,9 @@ See also these implementation-related blog posts:
 * https://rust-analyzer.github.io/blog/2020/09/16/challeging-LR-parsing.html
 * https://rust-analyzer.github.io/blog/2020/09/28/how-to-make-a-light-bulb.html
 * https://rust-analyzer.github.io/blog/2020/10/24/introducing-ungrammar.html
+
+For older, by now mostly outdated stuff, see the [guide](./guide.md) and [another playlist](https://www.youtube.com/playlist?list=PL85XCvVPmGQho7MZkdW-wtPtuJcFpzycE).
+
 
 ## Bird's Eye View
 
@@ -212,7 +210,7 @@ If you want to use IDE parts of rust-analyzer via LSP, custom flatbuffers-based 
 The API uses editor's terminology, it talks about offsets and string labels rather than in terms of definitions or types.
 It is effectively the view in MVC and viewmodel in [MVVM](https://en.wikipedia.org/wiki/Model%E2%80%93view%E2%80%93viewmodel).
 All arguments and return types are conceptually serializable.
-In particular, syntax tress and hir types are generally absent from the API (but are used heavily in the implementation).
+In particular, syntax trees and hir types are generally absent from the API (but are used heavily in the implementation).
 Shout outs to LSP developers for popularizing the idea that "UI" is a good place to draw a boundary at.
 
 `ide` is also the first crate which has the notion of change over time.
@@ -457,3 +455,17 @@ It is not cheap enough to enable in prod, and this is a bug which should be fixe
 rust-analyzer strives to be as configurable as possible while offering reasonable defaults where no configuration exists yet.
 There will always be features that some people find more annoying than helpful, so giving the users the ability to tweak or disable these is a big part of offering a good user experience.
 Mind the code--architecture gap: at the moment, we are using fewer feature flags than we really should.
+
+### Serialization
+
+In Rust, it is easy (often too easy) to add serialization to any type by adding `#[derive(Serialize)]`.
+This easiness is misleading -- serializable types impose significant backwards compatability constraints.
+If a type is serializable, then it is a part of some IPC boundary.
+You often don't control the other side of this boundary, so changing serializable types are hard.
+
+For this reason, the types in `ide`, `base_db` and bellow are not serializable by design.
+If such types need to cross an IPC boundary, then the client of rust-analyzer needs to provide custom, client-specific serialization format.
+This isolates backwards compatibility and migration concerns to a specific client.
+
+For example, `rust-project.json` is it's own format -- it doesn't include `CrateGraph` as is.
+Instead, it creates a `CrateGraph` by calling appropriate constructing functions.

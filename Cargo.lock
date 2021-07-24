@@ -381,6 +381,7 @@ dependencies = [
  "crossbeam-channel",
  "jod-thread",
  "log",
+ "paths",
  "serde",
  "serde_json",
  "stdx",
@@ -487,6 +488,7 @@ dependencies = [
  "indexmap",
  "itertools",
  "la-arena",
+ "limit",
  "log",
  "mbe",
  "once_cell",
@@ -508,6 +510,7 @@ dependencies = [
  "either",
  "expect-test",
  "la-arena",
+ "limit",
  "log",
  "mbe",
  "parser",
@@ -534,6 +537,7 @@ dependencies = [
  "hir_expand",
  "itertools",
  "la-arena",
+ "limit",
  "log",
  "once_cell",
  "profile",
@@ -640,6 +644,7 @@ dependencies = [
  "fst",
  "hir",
  "itertools",
+ "limit",
  "log",
  "once_cell",
  "profile",
@@ -759,7 +764,7 @@ checksum = "8b23360e99b8717f20aaa4598f5a6541efbe30630039fbc7706cf954a87947ae"
 
 [[package]]
 name = "la-arena"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "lazy_static"
@@ -791,6 +796,10 @@ checksum = "1d1b8479c593dba88c2741fc50b92e13dbabbbe0bd504d979f244ccc1a5b1c01"
 dependencies = [
  "cc",
 ]
+
+[[package]]
+name = "limit"
+version = "0.0.0"
 
 [[package]]
 name = "lock_api"
@@ -1042,6 +1051,9 @@ dependencies = [
 [[package]]
 name = "paths"
 version = "0.0.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "percent-encoding"
@@ -1109,6 +1121,7 @@ dependencies = [
  "log",
  "memmap2",
  "object",
+ "paths",
  "profile",
  "serde",
  "serde_json",
@@ -1127,6 +1140,7 @@ dependencies = [
  "mbe",
  "memmap2",
  "object",
+ "paths",
  "proc_macro_api",
  "proc_macro_test",
  "test_utils",
@@ -1169,12 +1183,14 @@ dependencies = [
  "base_db",
  "cargo_metadata",
  "cfg",
+ "expect-test",
  "la-arena",
  "log",
  "paths",
  "proc_macro_api",
  "profile",
  "rustc-hash",
+ "semver",
  "serde",
  "serde_json",
  "stdx",
@@ -1758,9 +1774,9 @@ dependencies = [
 
 [[package]]
 name = "ungrammar"
-version = "1.14.1"
+version = "1.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dbe67c0c0f5ded8e404578a9ab1009ffdb6ee219779329aefc0cb4fe7f44891"
+checksum = "5334230a6ae9ca52bc811c968c0ae12f1750c0698ed52ea68dabab7ce5a80972"
 
 [[package]]
 name = "unicase"

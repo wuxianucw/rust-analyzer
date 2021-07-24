@@ -1,5 +1,5 @@
 use either::Either;
-use hir::{AssocItem, MacroDef, Module, ModuleDef, Name, PathResolution, ScopeDef};
+use hir::{AssocItem, HasVisibility, MacroDef, Module, ModuleDef, Name, PathResolution, ScopeDef};
 use ide_db::{
     defs::{Definition, NameRefClass},
     search::SearchScope,
@@ -199,9 +199,8 @@ fn find_refs_in_mod(
 fn is_mod_visible_from(ctx: &AssistContext, module: Module, from: Module) -> bool {
     match module.parent(ctx.db()) {
         Some(parent) => {
-            parent.visibility_of(ctx.db(), &ModuleDef::Module(module)).map_or(true, |vis| {
-                vis.is_visible_from(ctx.db(), from.into()) && is_mod_visible_from(ctx, parent, from)
-            })
+            module.visibility(ctx.db()).is_visible_from(ctx.db(), from.into())
+                && is_mod_visible_from(ctx, parent, from)
         }
         None => true,
     }

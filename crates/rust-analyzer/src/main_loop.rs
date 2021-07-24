@@ -10,9 +10,8 @@ use always_assert::always;
 use crossbeam_channel::{select, Receiver};
 use ide::{FileId, PrimeCachesProgress};
 use ide_db::base_db::VfsPath;
-use lsp_server::{Connection, Notification, Request, Response};
+use lsp_server::{Connection, Notification, Request};
 use lsp_types::notification::Notification as _;
-use project_model::BuildDataCollector;
 use vfs::ChangeKind;
 
 use crate::{
@@ -61,7 +60,7 @@ enum Event {
 
 #[derive(Debug)]
 pub(crate) enum Task {
-    Response(Response),
+    Response(lsp_server::Response),
     Diagnostics(Vec<(FileId, Vec<lsp_types::Diagnostic>)>),
     PrimeCaches(PrimeCachesProgress),
     FetchWorkspace(ProjectWorkspaceProgress),
@@ -236,12 +235,7 @@ impl GlobalState {
                                     let workspaces_updated = !Arc::ptr_eq(&old, &self.workspaces);
 
                                     if self.config.run_build_scripts() && workspaces_updated {
-                                        let mut collector =
-                                            BuildDataCollector::new(self.config.wrap_rustc());
-                                        for ws in self.workspaces.iter() {
-                                            ws.collect_build_data_configs(&mut collector);
-                                        }
-                                        self.fetch_build_data_request(collector)
+                                        self.fetch_build_data_request()
                                     }
 
                                     (Progress::End, None)
@@ -472,7 +466,7 @@ impl GlobalState {
         self.register_request(&req, request_received);
 
         if self.shutdown_requested {
-            self.respond(Response::new_err(
+            self.respond(lsp_server::Response::new_err(
                 req.id,
                 lsp_server::ErrorCode::InvalidRequest as i32,
                 "Shutdown already requested.".to_owned(),
@@ -680,7 +674,7 @@ impl GlobalState {
                     },
                     |this, resp| {
                         log::debug!("config update response: '{:?}", resp);
-                        let Response { error, result, .. } = resp;
+                        let lsp_server::Response { error, result, .. } = resp;
 
                         match (error, result) {
                             (Some(err), _) => {
@@ -719,23 +713,21 @@ impl GlobalState {
         self.maybe_update_diagnostics();
 
         // Ensure that only one cache priming task can run at a time
-        self.prime_caches_queue.request_op(());
-        if self.prime_caches_queue.should_start_op().is_none() {
-            return;
-        }
-
-        self.task_pool.handle.spawn_with_sender({
-            let snap = self.snapshot();
-            move |sender| {
-                let cb = |progress| {
-                    sender.send(Task::PrimeCaches(progress)).unwrap();
-                };
-                match snap.analysis.prime_caches(cb) {
-                    Ok(()) => (),
-                    Err(_canceled) => (),
+        self.prime_caches_queue.request_op();
+        if self.prime_caches_queue.should_start_op() {
+            self.task_pool.handle.spawn_with_sender({
+                let snap = self.snapshot();
+                move |sender| {
+                    let cb = |progress| {
+                        sender.send(Task::PrimeCaches(progress)).unwrap();
+                    };
+                    match snap.analysis.prime_caches(cb) {
+                        Ok(()) => (),
+                        Err(_canceled) => (),
+                    }
                 }
-            }
-        });
+            });
+        }
     }
     fn maybe_update_diagnostics(&mut self) {
         let subscriptions = self

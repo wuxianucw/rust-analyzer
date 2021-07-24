@@ -67,7 +67,10 @@ impl SourceRoot {
 /// Note that `CrateGraph` is build-system agnostic: it's a concept of the Rust
 /// language proper, not a concept of the build system. In practice, we get
 /// `CrateGraph` by lowering `cargo metadata` output.
-#[derive(Debug, Clone, Default)]
+///
+/// `CrateGraph` is `!Serialize` by design, see
+/// <https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/dev/architecture.md#serialization>
+#[derive(Debug, Clone, Default /* Serialize, Deserialize */)]
 pub struct CrateGraph {
     arena: FxHashMap<CrateId, CrateData>,
 }
@@ -193,6 +196,10 @@ pub enum Edition {
     Edition2015,
     Edition2018,
     Edition2021,
+}
+
+impl Edition {
+    pub const CURRENT: Edition = Edition::Edition2018;
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -404,7 +411,7 @@ impl ops::Index<CrateId> for CrateGraph {
 }
 
 impl CrateId {
-    pub fn shift(self, amount: u32) -> CrateId {
+    fn shift(self, amount: u32) -> CrateId {
         CrateId(self.0 + amount)
     }
 }

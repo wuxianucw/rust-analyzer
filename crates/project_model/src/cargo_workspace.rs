@@ -1,8 +1,9 @@
 //! See [`CargoWorkspace`].
 
+use std::convert::TryInto;
 use std::iter;
 use std::path::PathBuf;
-use std::{convert::TryInto, ops, process::Command, sync::Arc};
+use std::{ops, process::Command};
 
 use anyhow::{Context, Result};
 use base_db::Edition;
@@ -14,7 +15,7 @@ use serde::Deserialize;
 use serde_json::from_value;
 
 use crate::CfgOverrides;
-use crate::{build_data::BuildDataConfig, utf8_stdout};
+use crate::{utf8_stdout, ManifestPath};
 
 /// [`CargoWorkspace`] represents the logical structure of, well, a Cargo
 /// workspace. It pretty closely mirrors `cargo metadata` output.
@@ -31,7 +32,6 @@ pub struct CargoWorkspace {
     packages: Arena<PackageData>,
     targets: Arena<TargetData>,
     workspace_root: AbsPathBuf,
-    build_data_config: BuildDataConfig,
 }
 
 impl ops::Index<Package> for CargoWorkspace {
@@ -81,6 +81,8 @@ pub struct CargoConfig {
 
     /// crates to disable `#[cfg(test)]` on
     pub unset_test_crates: Vec<String>,
+
+    pub wrap_rustc_in_build_scripts: bool,
 }
 
 impl CargoConfig {
@@ -103,11 +105,11 @@ pub type Target = Idx<TargetData>;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PackageData {
     /// Version given in the `Cargo.toml`
-    pub version: String,
+    pub version: semver::Version,
     /// Name as given in the `Cargo.toml`
     pub name: String,
     /// Path containing the `Cargo.toml`
-    pub manifest: AbsPathBuf,
+    pub manifest: ManifestPath,
     /// Targets provided by the crate (lib, bin, example, test, ...)
     pub targets: Vec<Target>,
     /// Is this package a member of the current workspace
@@ -214,12 +216,6 @@ impl TargetKind {
     }
 }
 
-impl PackageData {
-    pub fn root(&self) -> &AbsPath {
-        self.manifest.parent().unwrap()
-    }
-}
-
 #[derive(Deserialize, Default)]
 // Deserialise helper for the cargo metadata
 struct PackageMetadata {
@@ -228,11 +224,17 @@ struct PackageMetadata {
 }
 
 impl CargoWorkspace {
-    pub fn from_cargo_metadata(
-        cargo_toml: &AbsPath,
+    pub fn fetch_metadata(
+        cargo_toml: &ManifestPath,
         config: &CargoConfig,
         progress: &dyn Fn(String),
-    ) -> Result<CargoWorkspace> {
+    ) -> Result<cargo_metadata::Metadata> {
+        let target = config
+            .target
+            .clone()
+            .or_else(|| cargo_config_build_target(cargo_toml))
+            .or_else(|| rustc_discover_host_triple(cargo_toml));
+
         let mut meta = MetadataCommand::new();
         meta.cargo_path(toolchain::cargo());
         meta.manifest_path(cargo_toml.to_path_buf());
@@ -248,41 +250,25 @@ impl CargoWorkspace {
                 meta.features(CargoOpt::SomeFeatures(config.features.clone()));
             }
         }
-        if let Some(parent) = cargo_toml.parent() {
-            meta.current_dir(parent.to_path_buf());
-        }
-        let target = if let Some(target) = &config.target {
-            Some(target.clone())
-        } else if let stdout @ Some(_) = cargo_config_build_target(cargo_toml) {
-            stdout
-        } else {
-            rustc_discover_host_triple(cargo_toml)
-        };
+        meta.current_dir(cargo_toml.parent().as_os_str());
+
         if let Some(target) = target {
             meta.other_options(vec![String::from("--filter-platform"), target]);
         }
 
-        // FIXME: Currently MetadataCommand is not based on parse_stream,
-        // So we just report it as a whole
+        // FIXME: Fetching metadata is a slow process, as it might require
+        // calling crates.io. We should be reporting progress here, but it's
+        // unclear whether cargo itself supports it.
         progress("metadata".to_string());
-        let mut meta = meta.exec().with_context(|| {
-            let cwd: Option<AbsPathBuf> =
-                std::env::current_dir().ok().and_then(|p| p.try_into().ok());
 
-            let workdir = cargo_toml
-                .parent()
-                .map(|p| p.to_path_buf())
-                .or(cwd)
-                .map(|dir| dir.to_string_lossy().to_string())
-                .unwrap_or_else(|| "<failed to get path>".into());
-
-            format!(
-                "Failed to run `cargo metadata --manifest-path {}` in `{}`",
-                cargo_toml.display(),
-                workdir
-            )
+        let meta = meta.exec().with_context(|| {
+            format!("Failed to run `cargo metadata --manifest-path {}`", cargo_toml.display(),)
         })?;
 
+        Ok(meta)
+    }
+
+    pub fn new(mut meta: cargo_metadata::Metadata) -> CargoWorkspace {
         let mut pkg_by_id = FxHashMap::default();
         let mut packages = Arena::default();
         let mut targets = Arena::default();
@@ -296,15 +282,16 @@ impl CargoWorkspace {
             } = meta_pkg;
             let meta = from_value::<PackageMetadata>(metadata.clone()).unwrap_or_default();
             let is_member = ws_members.contains(id);
-            let edition = edition
-                .parse::<Edition>()
-                .with_context(|| format!("Failed to parse edition {}", edition))?;
+            let edition = edition.parse::<Edition>().unwrap_or_else(|err| {
+                log::error!("Failed to parse edition {}", err);
+                Edition::CURRENT
+            });
 
             let pkg = packages.alloc(PackageData {
                 id: id.repr.clone(),
                 name: name.clone(),
-                version: version.to_string(),
-                manifest: AbsPathBuf::assert(PathBuf::from(&manifest_path)),
+                version: version.clone(),
+                manifest: AbsPathBuf::assert(PathBuf::from(&manifest_path)).try_into().unwrap(),
                 targets: Vec::new(),
                 is_member,
                 edition,
@@ -363,10 +350,17 @@ impl CargoWorkspace {
 
         let workspace_root =
             AbsPathBuf::assert(PathBuf::from(meta.workspace_root.into_os_string()));
-        let build_data_config =
-            BuildDataConfig::new(cargo_toml.to_path_buf(), config.clone(), Arc::new(meta.packages));
 
-        Ok(CargoWorkspace { packages, targets, workspace_root, build_data_config })
+        CargoWorkspace { packages, targets, workspace_root }
+    }
+
+    pub fn from_cargo_metadata3(
+        cargo_toml: &ManifestPath,
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
+    ) -> Result<CargoWorkspace> {
+        let meta = CargoWorkspace::fetch_metadata(cargo_toml, config, progress)?;
+        Ok(CargoWorkspace::new(meta))
     }
 
     pub fn packages<'a>(&'a self) -> impl Iterator<Item = Package> + ExactSizeIterator + 'a {
@@ -392,18 +386,14 @@ impl CargoWorkspace {
         }
     }
 
-    pub(crate) fn build_data_config(&self) -> &BuildDataConfig {
-        &self.build_data_config
-    }
-
     fn is_unique(&self, name: &str) -> bool {
         self.packages.iter().filter(|(_, v)| v.name == name).count() == 1
     }
 }
 
-fn rustc_discover_host_triple(cargo_toml: &AbsPath) -> Option<String> {
+fn rustc_discover_host_triple(cargo_toml: &ManifestPath) -> Option<String> {
     let mut rustc = Command::new(toolchain::rustc());
-    rustc.current_dir(cargo_toml.parent().unwrap()).arg("-vV");
+    rustc.current_dir(cargo_toml.parent()).arg("-vV");
     log::debug!("Discovering host platform by {:?}", rustc);
     match utf8_stdout(rustc) {
         Ok(stdout) => {
@@ -424,10 +414,10 @@ fn rustc_discover_host_triple(cargo_toml: &AbsPath) -> Option<String> {
     }
 }
 
-fn cargo_config_build_target(cargo_toml: &AbsPath) -> Option<String> {
+fn cargo_config_build_target(cargo_toml: &ManifestPath) -> Option<String> {
     let mut cargo_config = Command::new(toolchain::cargo());
     cargo_config
-        .current_dir(cargo_toml.parent().unwrap())
+        .current_dir(cargo_toml.parent())
         .args(&["-Z", "unstable-options", "config", "get", "build.target"])
         .env("RUSTC_BOOTSTRAP", "1");
     // if successful we receive `build.target = "target-triple"`

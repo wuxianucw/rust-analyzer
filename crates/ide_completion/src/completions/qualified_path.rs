@@ -2,14 +2,15 @@
 
 use std::iter;
 
-use hir::HasVisibility;
 use rustc_hash::FxHashSet;
 use syntax::{ast, AstNode};
 
-use crate::{context::PathCompletionContext, CompletionContext, Completions};
+use crate::{
+    context::PathCompletionContext, patterns::ImmediateLocation, CompletionContext, Completions,
+};
 
 pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionContext) {
-    if ctx.is_path_disallowed() {
+    if ctx.is_path_disallowed() || ctx.has_impl_or_trait_prev_sibling() {
         return;
     }
     let (path, use_tree_parent) = match &ctx.path_context {
@@ -26,21 +27,40 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
 
     let context_module = ctx.scope.module();
 
-    if ctx.expects_item() || ctx.expects_assoc_item() {
-        if let hir::PathResolution::Def(hir::ModuleDef::Module(module)) = resolution {
-            let module_scope = module.scope(ctx.db, context_module);
-            for (name, def) in module_scope {
-                if let hir::ScopeDef::MacroDef(macro_def) = def {
-                    if macro_def.is_fn_like() {
-                        acc.add_macro(ctx, Some(name.clone()), macro_def);
+    match ctx.completion_location {
+        Some(ImmediateLocation::ItemList | ImmediateLocation::Trait | ImmediateLocation::Impl) => {
+            if let hir::PathResolution::Def(hir::ModuleDef::Module(module)) = resolution {
+                for (name, def) in module.scope(ctx.db, context_module) {
+                    if let hir::ScopeDef::MacroDef(macro_def) = def {
+                        if macro_def.is_fn_like() {
+                            acc.add_macro(ctx, Some(name.clone()), macro_def);
+                        }
+                    }
+                    if let hir::ScopeDef::ModuleDef(hir::ModuleDef::Module(_)) = def {
+                        acc.add_resolution(ctx, name, &def);
                     }
                 }
-                if let hir::ScopeDef::ModuleDef(hir::ModuleDef::Module(_)) = def {
-                    acc.add_resolution(ctx, name, &def);
+            }
+            return;
+        }
+        Some(ImmediateLocation::Visibility(_)) => {
+            if let hir::PathResolution::Def(hir::ModuleDef::Module(resolved)) = resolution {
+                if let Some(current_module) = ctx.scope.module() {
+                    if let Some(next) = current_module
+                        .path_to_root(ctx.db)
+                        .into_iter()
+                        .take_while(|&it| it != resolved)
+                        .next()
+                    {
+                        if let Some(name) = next.name(ctx.db) {
+                            acc.add_resolution(ctx, name, &hir::ScopeDef::ModuleDef(next.into()));
+                        }
+                    }
                 }
             }
+            return;
         }
-        return;
+        _ => (),
     }
 
     if ctx.in_use_tree() {
@@ -99,6 +119,7 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
                     _ => true,
                 };
 
+                // FIXME: respect #[doc(hidden)] (see `CompletionContext::is_visible`)
                 if add_resolution {
                     acc.add_resolution(ctx, name, &def);
                 }
@@ -142,7 +163,7 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
             if let Some(krate) = krate {
                 let traits_in_scope = ctx.scope.traits_in_scope();
                 ty.iterate_path_candidates(ctx.db, krate, &traits_in_scope, None, |_ty, item| {
-                    if context_module.map_or(false, |m| !item.is_visible_from(ctx.db, m)) {
+                    if !ctx.is_visible(&item) {
                         return None;
                     }
                     add_assoc_item(acc, ctx, item);
@@ -151,7 +172,7 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
 
                 // Iterate assoc types separately
                 ty.iterate_assoc_items(ctx.db, krate, |item| {
-                    if context_module.map_or(false, |m| !item.is_visible_from(ctx.db, m)) {
+                    if !ctx.is_visible(&item) {
                         return None;
                     }
                     if let hir::AssocItem::TypeAlias(ty) = item {
@@ -164,7 +185,7 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
         hir::PathResolution::Def(hir::ModuleDef::Trait(t)) => {
             // Handles `Trait::assoc` as well as `<Ty as Trait>::assoc`.
             for item in t.items(ctx.db) {
-                if context_module.map_or(false, |m| !item.is_visible_from(ctx.db, m)) {
+                if !ctx.is_visible(&item) {
                     continue;
                 }
                 add_assoc_item(acc, ctx, item);
@@ -185,7 +206,7 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
                 let traits_in_scope = ctx.scope.traits_in_scope();
                 let mut seen = FxHashSet::default();
                 ty.iterate_path_candidates(ctx.db, krate, &traits_in_scope, None, |_ty, item| {
-                    if context_module.map_or(false, |m| !item.is_visible_from(ctx.db, m)) {
+                    if !ctx.is_visible(&item) {
                         return None;
                     }
 
@@ -234,98 +255,29 @@ mod tests {
         expect.assert_eq(&actual);
     }
 
-    fn check_builtin(ra_fixture: &str, expect: Expect) {
-        let actual = filtered_completion_list(ra_fixture, CompletionKind::BuiltinType);
-        expect.assert_eq(&actual);
-    }
-
-    #[test]
-    fn dont_complete_primitive_in_use() {
-        check_builtin(r#"use self::$0;"#, expect![[""]]);
-    }
-
-    #[test]
-    fn dont_complete_primitive_in_module_scope() {
-        check_builtin(r#"fn foo() { self::$0 }"#, expect![[""]]);
-    }
-
-    #[test]
-    fn completes_enum_variant() {
-        check(
-            r#"
-enum E { Foo, Bar(i32) }
-fn foo() { let _ = E::$0 }
-"#,
-            expect![[r#"
-                ev Foo    ()
-                ev Bar(…) (i32)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn completes_struct_associated_items() {
-        check(
-            r#"
-//- /lib.rs
-struct S;
-
-impl S {
-    fn a() {}
-    fn b(&self) {}
-    const C: i32 = 42;
-    type T = i32;
-}
-
-fn foo() { let _ = S::$0 }
-"#,
-            expect![[r#"
-                fn a()  fn()
-                me b(…) fn(&self)
-                ct C    const C: i32 = 42;
-                ta T    type T = i32;
-            "#]],
-        );
-    }
-
     #[test]
     fn associated_item_visibility() {
         check(
             r#"
-struct S;
+//- /lib.rs crate:lib new_source_root:library
+pub struct S;
 
-mod m {
-    impl super::S {
-        pub(crate) fn public_method() { }
-        fn private_method() { }
-        pub(crate) type PublicType = u32;
-        type PrivateType = u32;
-        pub(crate) const PUBLIC_CONST: u32 = 1;
-        const PRIVATE_CONST: u32 = 1;
-    }
+impl S {
+    pub fn public_method() { }
+    fn private_method() { }
+    pub type PublicType = u32;
+    type PrivateType = u32;
+    pub const PUBLIC_CONST: u32 = 1;
+    const PRIVATE_CONST: u32 = 1;
 }
 
-fn foo() { let _ = S::$0 }
+//- /main.rs crate:main deps:lib new_source_root:local
+fn foo() { let _ = lib::S::$0 }
 "#,
             expect![[r#"
                 fn public_method() fn()
-                ct PUBLIC_CONST    pub(crate) const PUBLIC_CONST: u32 = 1;
-                ta PublicType      pub(crate) type PublicType = u32;
-            "#]],
-        );
-    }
-
-    #[test]
-    fn completes_enum_associated_method() {
-        check(
-            r#"
-enum E {};
-impl E { fn m() { } }
-
-fn foo() { let _ = E::$0 }
-        "#,
-            expect![[r#"
-                fn m() fn()
+                ct PUBLIC_CONST    pub const PUBLIC_CONST: u32 = 1;
+                ta PublicType      pub type PublicType = u32;
             "#]],
         );
     }

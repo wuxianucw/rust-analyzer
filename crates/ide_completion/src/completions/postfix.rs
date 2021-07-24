@@ -42,6 +42,13 @@ pub(crate) fn complete_postfix(acc: &mut Completions, ctx: &CompletionContext) {
         None => return,
     };
 
+    // Suggest .await syntax for types that implement Future trait
+    if receiver_ty.impls_future(ctx.db) {
+        let mut item = CompletionItem::new(CompletionKind::Keyword, ctx.source_range(), "await");
+        item.kind(CompletionItemKind::Keyword).detail("expr.await");
+        item.add_to(acc);
+    }
+
     let cap = match ctx.config.snippet_cap {
         Some(it) => it,
         None => return,
@@ -315,8 +322,8 @@ fn postfix_snippet(
     let mut item = CompletionItem::new(CompletionKind::Postfix, ctx.source_range(), label);
     item.detail(detail).kind(CompletionItemKind::Snippet).snippet_edit(cap, edit);
     if ctx.original_token.text() == label {
-        let mut relevance = CompletionRelevance::default();
-        relevance.exact_postfix_snippet_match = true;
+        let relevance =
+            CompletionRelevance { exact_postfix_snippet_match: true, ..Default::default() };
         item.set_relevance(relevance);
     }
 

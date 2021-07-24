@@ -295,12 +295,19 @@ impl ModuleDef {
     }
 
     pub fn canonical_path(&self, db: &dyn HirDatabase) -> Option<String> {
-        let mut segments = vec![self.name(db)?.to_string()];
+        let mut segments = vec![self.name(db)?];
         for m in self.module(db)?.path_to_root(db) {
-            segments.extend(m.name(db).map(|it| it.to_string()))
+            segments.extend(m.name(db))
         }
         segments.reverse();
-        Some(segments.join("::"))
+        Some(segments.into_iter().join("::"))
+    }
+
+    pub fn canonical_module_path(
+        &self,
+        db: &dyn HirDatabase,
+    ) -> Option<impl Iterator<Item = Module>> {
+        self.module(db).map(|it| it.path_to_root(db).into_iter().rev())
     }
 
     pub fn name(self, db: &dyn HirDatabase) -> Option<Name> {
@@ -343,6 +350,22 @@ impl ModuleDef {
             acc.push(diag.into())
         }
         acc
+    }
+}
+
+impl HasVisibility for ModuleDef {
+    fn visibility(&self, db: &dyn HirDatabase) -> Visibility {
+        match *self {
+            ModuleDef::Module(it) => it.visibility(db),
+            ModuleDef::Function(it) => it.visibility(db),
+            ModuleDef::Adt(it) => it.visibility(db),
+            ModuleDef::Const(it) => it.visibility(db),
+            ModuleDef::Static(it) => it.visibility(db),
+            ModuleDef::Trait(it) => it.visibility(db),
+            ModuleDef::TypeAlias(it) => it.visibility(db),
+            ModuleDef::Variant(it) => it.visibility(db),
+            ModuleDef::BuiltinType(_) => Visibility::Public,
+        }
     }
 }
 
@@ -428,18 +451,6 @@ impl Module {
                 ScopeDef::all_items(def).into_iter().map(move |item| (name.clone(), item))
             })
             .collect()
-    }
-
-    pub fn visibility(self, db: &dyn HirDatabase) -> Visibility {
-        let def_map = self.id.def_map(db.upcast());
-        let module_data = &def_map[self.id.local_id];
-        module_data.visibility
-    }
-
-    pub fn visibility_of(self, db: &dyn HirDatabase, def: &ModuleDef) -> Option<Visibility> {
-        let def_map = self.id.def_map(db.upcast());
-        let module_data = &def_map[self.id.local_id];
-        module_data.scope.visibility_of((*def).into())
     }
 
     pub fn diagnostics(self, db: &dyn HirDatabase, acc: &mut Vec<AnyDiagnostic>) {
@@ -646,6 +657,14 @@ impl Module {
     }
 }
 
+impl HasVisibility for Module {
+    fn visibility(&self, db: &dyn HirDatabase) -> Visibility {
+        let def_map = self.id.def_map(db.upcast());
+        let module_data = &def_map[self.id.local_id];
+        module_data.visibility
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Field {
     pub(crate) parent: VariantDef,
@@ -838,6 +857,13 @@ impl Variant {
 
     pub(crate) fn variant_data(self, db: &dyn HirDatabase) -> Arc<VariantData> {
         db.enum_data(self.parent.id).variants[self.id].variant_data.clone()
+    }
+}
+
+/// Variants inherit visibility from the parent enum.
+impl HasVisibility for Variant {
+    fn visibility(&self, db: &dyn HirDatabase) -> Visibility {
+        self.parent_enum(db).visibility(db)
     }
 }
 
@@ -2716,5 +2742,34 @@ pub trait HasVisibility {
     fn is_visible_from(&self, db: &dyn HirDatabase, module: Module) -> bool {
         let vis = self.visibility(db);
         vis.is_visible_from(db.upcast(), module.id)
+    }
+}
+
+/// Trait for obtaining the defining crate of an item.
+pub trait HasCrate {
+    fn krate(&self, db: &dyn HirDatabase) -> Crate;
+}
+
+impl<T: hir_def::HasModule> HasCrate for T {
+    fn krate(&self, db: &dyn HirDatabase) -> Crate {
+        self.module(db.upcast()).krate().into()
+    }
+}
+
+impl HasCrate for AssocItem {
+    fn krate(&self, db: &dyn HirDatabase) -> Crate {
+        self.module(db).krate()
+    }
+}
+
+impl HasCrate for Field {
+    fn krate(&self, db: &dyn HirDatabase) -> Crate {
+        self.parent_def(db).module(db).krate()
+    }
+}
+
+impl HasCrate for Function {
+    fn krate(&self, db: &dyn HirDatabase) -> Crate {
+        self.module(db).krate()
     }
 }
