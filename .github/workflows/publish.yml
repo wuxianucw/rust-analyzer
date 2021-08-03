@@ -5,9 +5,9 @@ on:
 #   schedule:
 #     - cron: "0 0 * * *" # midnight UTC
 
-  push:
-    branches:
-      - release
+#  push:
+#    branches:
+#      - release
 
 jobs:
   publish:
