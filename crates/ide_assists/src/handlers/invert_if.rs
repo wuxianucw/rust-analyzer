@@ -12,8 +12,7 @@ use crate::{
 // Assist: invert_if
 //
 // This transforms if expressions of the form `if !x {A} else {B}` into `if x {B} else {A}`
-// This also works with `!=`. This assist can only be applied with the cursor
-// on `if`.
+// This also works with `!=`. This assist can only be applied with the cursor on `if`.
 //
 // ```
 // fn main() {
@@ -26,7 +25,6 @@ use crate::{
 //     if y { B } else { A }
 // }
 // ```
-
 pub(crate) fn invert_if(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     let if_keyword = ctx.find_token_syntax_at_offset(T![if])?;
     let expr = ast::IfExpr::cast(if_keyword.parent()?)?;
@@ -37,7 +35,7 @@ pub(crate) fn invert_if(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     }
 
     // This assist should not apply for if-let.
-    if expr.condition()?.pat().is_some() {
+    if expr.condition()?.is_pattern_cond() {
         return None;
     }
 

@@ -326,6 +326,7 @@
                         "null",
                         "string"
                     ],
+                    "scope": "machine-overridable",
                     "default": null,
                     "markdownDescription": "Path to rust-analyzer executable (points to bundled binary by default). If this is set, then `#rust-analyzer.updates.channel#` setting is not used"
                 },
@@ -787,6 +788,11 @@
                 "rust-analyzer.lens.references": {
                     "markdownDescription": "Whether to show `References` lens. Only applies when\n`#rust-analyzer.lens.enable#` is set.",
                     "default": false,
+                    "type": "boolean"
+                },
+                "rust-analyzer.lens.forceCustomCommands": {
+                    "markdownDescription": "Internal config: use custom client-side commands even when the\nclient doesn't set the corresponding capability.",
+                    "default": true,
                     "type": "boolean"
                 },
                 "rust-analyzer.linkedProjects": {

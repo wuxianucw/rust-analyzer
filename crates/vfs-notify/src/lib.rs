@@ -83,9 +83,10 @@ impl NotifyActor {
                         self.watcher = None;
                         if !config.watch.is_empty() {
                             let (watcher_sender, watcher_receiver) = unbounded();
-                            let watcher = log_notify_error(Watcher::new_immediate(move |event| {
-                                watcher_sender.send(event).unwrap()
-                            }));
+                            let watcher =
+                                log_notify_error(RecommendedWatcher::new_immediate(move |event| {
+                                    watcher_sender.send(event).unwrap()
+                                }));
                             self.watcher = watcher.map(|it| (it, watcher_receiver));
                         }
 

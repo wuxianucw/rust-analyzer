@@ -107,9 +107,11 @@ pub(super) fn doc_comment(
         extract_definitions_from_docs(&docs)
             .into_iter()
             .filter_map(|(range, link, ns)| {
-                let def = resolve_doc_path_for_def(sema.db, def, &link, ns)?;
-                let InFile { file_id, value: range } = doc_mapping.map(range)?;
-                (file_id == node.file_id).then(|| (range, def))
+                doc_mapping.map(range).filter(|mapping| mapping.file_id == node.file_id).and_then(
+                    |InFile { value: mapped_range, .. }| {
+                        Some(mapped_range).zip(resolve_doc_path_for_def(sema.db, def, &link, ns))
+                    },
+                )
             })
             .for_each(|(range, def)| {
                 hl.add(HlRange {
@@ -236,19 +238,22 @@ fn find_doc_string_in_attr(attr: &hir::Attr, it: &ast::Attr) -> Option<ast::Stri
     }
 }
 
-fn module_def_to_hl_tag(def: hir::ModuleDef) -> HlTag {
+fn module_def_to_hl_tag(def: Either<hir::ModuleDef, hir::MacroDef>) -> HlTag {
     let symbol = match def {
-        hir::ModuleDef::Module(_) => SymbolKind::Module,
-        hir::ModuleDef::Function(_) => SymbolKind::Function,
-        hir::ModuleDef::Adt(hir::Adt::Struct(_)) => SymbolKind::Struct,
-        hir::ModuleDef::Adt(hir::Adt::Enum(_)) => SymbolKind::Enum,
-        hir::ModuleDef::Adt(hir::Adt::Union(_)) => SymbolKind::Union,
-        hir::ModuleDef::Variant(_) => SymbolKind::Variant,
-        hir::ModuleDef::Const(_) => SymbolKind::Const,
-        hir::ModuleDef::Static(_) => SymbolKind::Static,
-        hir::ModuleDef::Trait(_) => SymbolKind::Trait,
-        hir::ModuleDef::TypeAlias(_) => SymbolKind::TypeAlias,
-        hir::ModuleDef::BuiltinType(_) => return HlTag::BuiltinType,
+        Either::Left(def) => match def {
+            hir::ModuleDef::Module(_) => SymbolKind::Module,
+            hir::ModuleDef::Function(_) => SymbolKind::Function,
+            hir::ModuleDef::Adt(hir::Adt::Struct(_)) => SymbolKind::Struct,
+            hir::ModuleDef::Adt(hir::Adt::Enum(_)) => SymbolKind::Enum,
+            hir::ModuleDef::Adt(hir::Adt::Union(_)) => SymbolKind::Union,
+            hir::ModuleDef::Variant(_) => SymbolKind::Variant,
+            hir::ModuleDef::Const(_) => SymbolKind::Const,
+            hir::ModuleDef::Static(_) => SymbolKind::Static,
+            hir::ModuleDef::Trait(_) => SymbolKind::Trait,
+            hir::ModuleDef::TypeAlias(_) => SymbolKind::TypeAlias,
+            hir::ModuleDef::BuiltinType(_) => return HlTag::BuiltinType,
+        },
+        Either::Right(_) => SymbolKind::Macro,
     };
     HlTag::Symbol(symbol)
 }

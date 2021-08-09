@@ -12,7 +12,7 @@ use either::Either;
 use hir::{Crate, Enum, ItemInNs, MacroDef, Module, ModuleDef, Name, ScopeDef, Semantics, Trait};
 use syntax::{
     ast::{self, make, LoopBodyOwner},
-    AstNode, SyntaxKind, SyntaxToken, TokenAtOffset, WalkEvent,
+    AstNode, Direction, SyntaxElement, SyntaxKind, SyntaxToken, TokenAtOffset, WalkEvent, T,
 };
 
 use crate::RootDatabase;
@@ -22,6 +22,38 @@ pub fn item_name(db: &RootDatabase, item: ItemInNs) -> Option<Name> {
         ItemInNs::Types(module_def_id) => ModuleDef::from(module_def_id).name(db),
         ItemInNs::Values(module_def_id) => ModuleDef::from(module_def_id).name(db),
         ItemInNs::Macros(macro_def_id) => MacroDef::from(macro_def_id).name(db),
+    }
+}
+
+/// Resolves the path at the cursor token as a derive macro if it inside a token tree of a derive attribute.
+pub fn try_resolve_derive_input_at(
+    sema: &Semantics<RootDatabase>,
+    derive_attr: &ast::Attr,
+    cursor: &SyntaxToken,
+) -> Option<MacroDef> {
+    use itertools::Itertools;
+    if cursor.kind() != T![ident] {
+        return None;
+    }
+    let tt = match derive_attr.as_simple_call() {
+        Some((name, tt))
+            if name == "derive" && tt.syntax().text_range().contains_range(cursor.text_range()) =>
+        {
+            tt
+        }
+        _ => return None,
+    };
+    let tokens: Vec<_> = cursor
+        .siblings_with_tokens(Direction::Prev)
+        .flat_map(SyntaxElement::into_token)
+        .take_while(|tok| tok.kind() != T!['('] && tok.kind() != T![,])
+        .collect();
+    let path = ast::Path::parse(&tokens.into_iter().rev().join("")).ok()?;
+    match sema.scope(tt.syntax()).speculative_resolve(&path) {
+        Some(hir::PathResolution::Macro(makro)) if makro.kind() == hir::MacroKind::Derive => {
+            Some(makro)
+        }
+        _ => None,
     }
 }
 
@@ -88,8 +120,8 @@ pub fn visit_file_defs(
 ///
 /// Note that, by default, rust-analyzer tests **do not** include core or std
 /// libraries. If you are writing tests for functionality using [`FamousDefs`],
-/// you'd want to include [minicore](test_utils::MiniCore) declaration at the
-/// start of your tests:
+/// you'd want to include minicore (see `test_utils::MiniCore`) declaration at
+/// the start of your tests:
 ///
 /// ```
 /// //- minicore: iterator, ord, derive
@@ -239,7 +271,20 @@ pub fn for_each_tail_expr(expr: &ast::Expr, cb: &mut dyn FnMut(&ast::Expr)) {
             ast::Effect::Async(_) | ast::Effect::Try(_) | ast::Effect::Const(_) => cb(expr),
         },
         ast::Expr::IfExpr(if_) => {
-            if_.blocks().for_each(|block| for_each_tail_expr(&ast::Expr::BlockExpr(block), cb))
+            let mut if_ = if_.clone();
+            loop {
+                if let Some(block) = if_.then_branch() {
+                    for_each_tail_expr(&ast::Expr::BlockExpr(block), cb);
+                }
+                match if_.else_branch() {
+                    Some(ast::ElseBranch::IfExpr(it)) => if_ = it,
+                    Some(ast::ElseBranch::Block(block)) => {
+                        for_each_tail_expr(&ast::Expr::BlockExpr(block), cb);
+                        break;
+                    }
+                    None => break,
+                }
+            }
         }
         ast::Expr::LoopExpr(l) => {
             for_each_break_expr(l.label(), l.loop_body(), &mut |b| cb(&ast::Expr::BreakExpr(b)))

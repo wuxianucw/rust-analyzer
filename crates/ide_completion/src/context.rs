@@ -1,7 +1,7 @@
 //! See `CompletionContext` structure.
 
 use base_db::SourceDatabaseExt;
-use hir::{Local, ScopeDef, Semantics, SemanticsScope, Type};
+use hir::{Local, Name, ScopeDef, Semantics, SemanticsScope, Type, TypeInfo};
 use ide_db::{
     base_db::{FilePosition, SourceDatabase},
     call_info::ActiveParameter,
@@ -370,6 +370,34 @@ impl<'a> CompletionContext<'a> {
         self.is_visible_impl(&item.visibility(self.db), &item.attrs(self.db), item.krate(self.db))
     }
 
+    pub(crate) fn is_scope_def_hidden(&self, scope_def: &ScopeDef) -> bool {
+        if let (Some(attrs), Some(krate)) = (scope_def.attrs(self.db), scope_def.krate(self.db)) {
+            return self.is_doc_hidden(&attrs, krate);
+        }
+
+        false
+    }
+
+    pub(crate) fn is_item_hidden(&self, item: &hir::ItemInNs) -> bool {
+        let attrs = item.attrs(self.db);
+        let krate = item.krate(self.db);
+        match (attrs, krate) {
+            (Some(attrs), Some(krate)) => self.is_doc_hidden(&attrs, krate),
+            _ => false,
+        }
+    }
+
+    /// A version of [`SemanticsScope::process_all_names`] that filters out `#[doc(hidden)]` items.
+    pub(crate) fn process_all_names(&self, f: &mut dyn FnMut(Name, ScopeDef)) {
+        self.scope.process_all_names(&mut |name, def| {
+            if self.is_scope_def_hidden(&def) {
+                return;
+            }
+
+            f(name, def);
+        })
+    }
+
     fn is_visible_impl(
         &self,
         vis: &hir::Visibility,
@@ -388,12 +416,20 @@ impl<'a> CompletionContext<'a> {
             return is_editable;
         }
 
+        !self.is_doc_hidden(attrs, defining_crate)
+    }
+
+    fn is_doc_hidden(&self, attrs: &hir::Attrs, defining_crate: hir::Crate) -> bool {
+        let module = match self.scope.module() {
+            Some(it) => it,
+            None => return true,
+        };
         if module.krate() != defining_crate && attrs.has_doc_hidden() {
             // `doc(hidden)` items are only completed within the defining crate.
-            return false;
+            return true;
         }
 
-        true
+        false
     }
 
     fn fill_impl_def(&mut self) {
@@ -417,7 +453,8 @@ impl<'a> CompletionContext<'a> {
                         cov_mark::hit!(expected_type_let_without_leading_char);
                         let ty = it.pat()
                             .and_then(|pat| self.sema.type_of_pat(&pat))
-                            .or_else(|| it.initializer().and_then(|it| self.sema.type_of_expr(&it)));
+                            .or_else(|| it.initializer().and_then(|it| self.sema.type_of_expr(&it)))
+                            .map(TypeInfo::original);
                         let name = if let Some(ast::Pat::IdentPat(ident)) = it.pat() {
                             ident.name().map(NameOrNameRef::Name)
                         } else {
@@ -460,27 +497,27 @@ impl<'a> CompletionContext<'a> {
                     ast::RecordExprField(it) => {
                         cov_mark::hit!(expected_type_struct_field_with_leading_char);
                         (
-                            it.expr().as_ref().and_then(|e| self.sema.type_of_expr(e)),
+                            it.expr().as_ref().and_then(|e| self.sema.type_of_expr(e)).map(TypeInfo::original),
                             it.field_name().map(NameOrNameRef::NameRef),
                         )
                     },
                     ast::MatchExpr(it) => {
                         cov_mark::hit!(expected_type_match_arm_without_leading_char);
-                        let ty = it.expr()
-                            .and_then(|e| self.sema.type_of_expr(&e));
+                        let ty = it.expr().and_then(|e| self.sema.type_of_expr(&e)).map(TypeInfo::original);
                         (ty, None)
                     },
                     ast::IfExpr(it) => {
                         cov_mark::hit!(expected_type_if_let_without_leading_char);
                         let ty = it.condition()
                             .and_then(|cond| cond.expr())
-                            .and_then(|e| self.sema.type_of_expr(&e));
+                            .and_then(|e| self.sema.type_of_expr(&e))
+                            .map(TypeInfo::original);
                         (ty, None)
                     },
                     ast::IdentPat(it) => {
                         cov_mark::hit!(expected_type_if_let_with_leading_char);
                         cov_mark::hit!(expected_type_match_arm_with_leading_char);
-                        let ty = self.sema.type_of_pat(&ast::Pat::from(it));
+                        let ty = self.sema.type_of_pat(&ast::Pat::from(it)).map(TypeInfo::original);
                         (ty, None)
                     },
                     ast::Fn(it) => {
@@ -491,7 +528,7 @@ impl<'a> CompletionContext<'a> {
                     },
                     ast::ClosureExpr(it) => {
                         let ty = self.sema.type_of_expr(&it.into());
-                        ty.and_then(|ty| ty.as_callable(self.db))
+                        ty.and_then(|ty| ty.original.as_callable(self.db))
                             .map(|c| (Some(c.return_type()), None))
                             .unwrap_or((None, None))
                     },
@@ -588,11 +625,7 @@ impl<'a> CompletionContext<'a> {
     fn classify_name(&mut self, name: ast::Name) {
         if let Some(bind_pat) = name.syntax().parent().and_then(ast::IdentPat::cast) {
             self.is_pat_or_const = Some(PatternRefutability::Refutable);
-            // if any of these is here our bind pat can't be a const pat anymore
-            let complex_ident_pat = bind_pat.at_token().is_some()
-                || bind_pat.ref_token().is_some()
-                || bind_pat.mut_token().is_some();
-            if complex_ident_pat {
+            if !bind_pat.is_simple_ident() {
                 self.is_pat_or_const = None;
             } else {
                 let irrefutable_pat = bind_pat.syntax().ancestors().find_map(|node| {

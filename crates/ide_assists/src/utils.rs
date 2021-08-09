@@ -248,7 +248,7 @@ fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Opti
                 "is_err" => "is_ok",
                 _ => return None,
             };
-            Some(make::expr_method_call(receiver, method, arg_list))
+            Some(make::expr_method_call(receiver, make::name_ref(method), arg_list))
         }
         ast::Expr::PrefixExpr(pe) if pe.op_kind()? == ast::PrefixOp::Not => {
             if let ast::Expr::ParenExpr(parexpr) = pe.expr()? {
@@ -270,8 +270,8 @@ fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Opti
 
 fn bin_impls_ord(sema: &Semantics<RootDatabase>, bin: &ast::BinExpr) -> bool {
     match (
-        bin.lhs().and_then(|lhs| sema.type_of_expr(&lhs)),
-        bin.rhs().and_then(|rhs| sema.type_of_expr(&rhs)),
+        bin.lhs().and_then(|lhs| sema.type_of_expr(&lhs)).map(hir::TypeInfo::adjusted),
+        bin.rhs().and_then(|rhs| sema.type_of_expr(&rhs)).map(hir::TypeInfo::adjusted),
     ) {
         (Some(lhs_ty), Some(rhs_ty)) if lhs_ty == rhs_ty => {
             let krate = sema.scope(bin.syntax()).module().map(|it| it.krate());
@@ -492,4 +492,27 @@ pub(crate) fn add_method_to_adt(
         });
 
     builder.insert(start_offset, buf);
+}
+
+pub fn useless_type_special_case(field_name: &str, field_ty: &String) -> Option<(String, String)> {
+    if field_ty.to_string() == "String" {
+        cov_mark::hit!(useless_type_special_case);
+        return Some(("&str".to_string(), format!("self.{}.as_str()", field_name)));
+    }
+    if let Some(arg) = ty_ctor(field_ty, "Vec") {
+        return Some((format!("&[{}]", arg), format!("self.{}.as_slice()", field_name)));
+    }
+    if let Some(arg) = ty_ctor(field_ty, "Box") {
+        return Some((format!("&{}", arg), format!("self.{}.as_ref()", field_name)));
+    }
+    if let Some(arg) = ty_ctor(field_ty, "Option") {
+        return Some((format!("Option<&{}>", arg), format!("self.{}.as_ref()", field_name)));
+    }
+    None
+}
+
+// FIXME: This should rely on semantic info.
+fn ty_ctor(ty: &String, ctor: &str) -> Option<String> {
+    let res = ty.to_string().strip_prefix(ctor)?.strip_prefix('<')?.strip_suffix('>')?.to_string();
+    Some(res)
 }

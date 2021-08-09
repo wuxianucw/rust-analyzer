@@ -170,7 +170,7 @@ More than one mark per test / code branch doesn't add significantly to understan
 Do not use `#[should_panic]` tests.
 Instead, explicitly check for `None`, `Err`, etc.
 
-**Rationale:** `#[should_panic]` is a tool for library authors, to makes sure that API does not fail silently, when misused.
+**Rationale:** `#[should_panic]` is a tool for library authors to make sure that the API does not fail silently when misused.
 `rust-analyzer` is not a library, we don't need to test for API misuse, and we have to handle any user input without panics.
 Panic messages in the logs from the `#[should_panic]` tests are confusing.
 
@@ -333,7 +333,7 @@ impl Foo {
 }
 ```
 
-Prefer `Default` even it has to be implemented manually.
+Prefer `Default` even if it has to be implemented manually.
 
 **Rationale:** less typing in the common case, uniformity.
 
@@ -343,7 +343,7 @@ Use `Vec::new` rather than `vec![]`.
 
 Avoid using "dummy" states to implement a `Default`.
 If a type doesn't have a sensible default, empty value, don't hide it.
-Let the caller explicitly decide what's the right initial state is.
+Let the caller explicitly decide what the right initial state is.
 
 ## Functions Over Objects
 
@@ -526,7 +526,7 @@ if words.len() != 2 {
 }
 ```
 
-**Rationale:** not allocating is almost often faster.
+**Rationale:** not allocating is almost always faster.
 
 ## Push Allocations to the Call Site
 
@@ -839,6 +839,7 @@ crate  -> krate
 enum   -> enum_
 fn     -> func
 impl   -> imp
+macro  -> mac
 mod    -> module
 struct -> strukt
 trait  -> trait_
@@ -914,6 +915,15 @@ if let Some(expected_type) = ctx.expected_type.as_ref() {
 
 **Rationale:** `match` is almost always more compact.
 The `else` branch can get a more precise pattern: `None` or `Err(_)` instead of `_`.
+
+## Match Ergonomics
+
+Don't use the `ref` keyword.
+
+**Rationale:** consistency & simplicity.
+`ref` was required before [match ergonomics](https://github.com/rust-lang/rfcs/blob/master/text/2005-match-ergonomics.md).
+Today, it is redundant.
+Between `ref` and mach ergonomics, the latter is more ergonomic in most cases, and is simpler (does not require a keyword).
 
 ## Helper Functions
 
@@ -998,9 +1008,9 @@ match output.status.code() {
 };
 ```
 
-**Rationale:** like blocks, single-use variables are a cognitively cheap abstraction, as they have access to all the context.
+**Rationale:** Like blocks, single-use variables are a cognitively cheap abstraction, as they have access to all the context.
 Extra variables help during debugging, they make it easy to print/view important intermediate results.
-Giving a name to a condition in `if` expression often improves clarity and leads to a nicer formatted code.
+Giving a name to a condition inside an `if` expression often improves clarity and leads to nicely formatted code.
 
 ## Token names
 

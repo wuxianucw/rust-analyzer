@@ -1,5 +1,5 @@
 use either::Either;
-use hir::{known, Callable, HasVisibility, HirDisplay, Semantics};
+use hir::{known, Callable, HasVisibility, HirDisplay, Semantics, TypeInfo};
 use ide_db::helpers::FamousDefs;
 use ide_db::RootDatabase;
 use stdx::to_lower_snake_case;
@@ -117,7 +117,7 @@ fn get_chaining_hints(
             next_next = tokens.next()?.kind();
         }
         if next_next == T![.] {
-            let ty = sema.type_of_expr(&expr)?;
+            let ty = sema.type_of_expr(&expr)?.original;
             if ty.is_unknown() {
                 return None;
             }
@@ -189,13 +189,17 @@ fn get_bind_pat_hints(
     let krate = sema.scope(pat.syntax()).module().map(|it| it.krate());
     let famous_defs = FamousDefs(sema, krate);
 
-    let ty = sema.type_of_pat(&pat.clone().into())?;
+    let ty = sema.type_of_pat(&pat.clone().into())?.original;
 
     if should_not_display_type_hint(sema, &pat, &ty) {
         return None;
     }
+
     acc.push(InlayHint {
-        range: pat.syntax().text_range(),
+        range: match pat.name() {
+            Some(name) => name.syntax().text_range(),
+            None => pat.syntax().text_range(),
+        },
         kind: InlayKind::TypeHint,
         label: hint_iterator(sema, &famous_defs, config, &ty)
             .unwrap_or_else(|| ty.display_truncated(sema.db, config.max_length).to_string().into()),
@@ -304,6 +308,7 @@ fn should_not_display_type_hint(
                     return it.in_token().is_none() ||
                         it.iterable()
                             .and_then(|iterable_expr| sema.type_of_expr(&iterable_expr))
+                            .map(TypeInfo::original)
                             .map_or(true, |iterable_ty| iterable_ty.is_unknown() || iterable_ty.is_unit())
                 },
                 _ => (),
@@ -389,7 +394,7 @@ fn is_enum_name_similar_to_param_name(
     argument: &ast::Expr,
     param_name: &str,
 ) -> bool {
-    match sema.type_of_expr(argument).and_then(|t| t.as_adt()) {
+    match sema.type_of_expr(argument).and_then(|t| t.original.as_adt()) {
         Some(hir::Adt::Enum(e)) => to_lower_snake_case(&e.name(sema.db).to_string()) == param_name,
         _ => false,
     }
@@ -426,7 +431,7 @@ fn get_callable(
 ) -> Option<(hir::Callable, ast::ArgList)> {
     match expr {
         ast::Expr::CallExpr(expr) => {
-            sema.type_of_expr(&expr.expr()?)?.as_callable(sema.db).zip(expr.arg_list())
+            sema.type_of_expr(&expr.expr()?)?.original.as_callable(sema.db).zip(expr.arg_list())
         }
         ast::Expr::MethodCallExpr(expr) => {
             sema.resolve_method_call_as_callable(expr).zip(expr.arg_list())
@@ -800,6 +805,28 @@ fn main() {
     }
 
     #[test]
+    fn type_hints_bindings_after_at() {
+        check_types(
+            r#"
+//- minicore: option
+fn main() {
+    let ref foo @ bar @ ref mut baz = 0;
+          //^^^ &i32
+                //^^^ i32
+                              //^^^ &mut i32
+    let [x @ ..] = [0];
+       //^ [i32; 1]
+    if let x @ Some(_) = Some(0) {}
+         //^ Option<i32>
+    let foo @ (bar, baz) = (3, 3);
+      //^^^ (i32, i32)
+             //^^^ i32
+                  //^^^ i32
+}"#,
+        );
+    }
+
+    #[test]
     fn default_generic_types_should_not_be_displayed() {
         check(
             r#"
@@ -839,7 +866,7 @@ impl<T> Iterator for SomeIter<T> {
 
 fn main() {
     let mut some_iter = SomeIter::new();
-      //^^^^^^^^^^^^^ SomeIter<Take<Repeat<i32>>>
+          //^^^^^^^^^ SomeIter<Take<Repeat<i32>>>
       some_iter.push(iter::repeat(2).take(2));
     let iter_of_iters = some_iter.take(2);
       //^^^^^^^^^^^^^ impl Iterator<Item = impl Iterator<Item = i32>>
@@ -938,7 +965,7 @@ fn main() {
       //^^^^ i32
     let test: i32 = 33;
     let mut test = 33;
-      //^^^^^^^^ i32
+          //^^^^ i32
     let _ = 22;
     let test = "test";
       //^^^^ &str
@@ -1048,7 +1075,7 @@ impl<T> IntoIterator for Vec<T> {
 
 fn main() {
     let mut data = Vec::new();
-      //^^^^^^^^ Vec<&str>
+          //^^^^ Vec<&str>
     data.push("foo");
     for i in
 
@@ -1076,7 +1103,7 @@ impl<T> IntoIterator for Vec<T> {
 
 fn main() {
     let mut data = Vec::new();
-      //^^^^^^^^ Vec<&str>
+          //^^^^ Vec<&str>
     data.push("foo");
     for i in data {
       //^ &str
@@ -1153,7 +1180,7 @@ fn main() {
             r#"
 fn main() {
     let mut start = 0;
-      //^^^^^^^^^ i32
+          //^^^^^ i32
     (0..2).for_each(|increment| { start += increment; });
                    //^^^^^^^^^ i32
 

@@ -17,6 +17,7 @@
 //!     deref_mut: deref
 //!     index: sized
 //!     fn:
+//!     try:
 //!     pin:
 //!     future: pin
 //!     option:
@@ -30,6 +31,7 @@
 //!     eq: sized
 //!     ord: eq, option
 //!     derive:
+//!     fmt: result
 
 pub mod marker {
     // region:sized
@@ -266,6 +268,28 @@ pub mod ops {
     }
     pub use self::function::{Fn, FnMut, FnOnce};
     // endregion:fn
+    // region:try
+    mod try_ {
+        pub enum ControlFlow<B, C = ()> {
+            Continue(C),
+            Break(B),
+        }
+        pub trait FromResidual<R = Self::Residual> {
+            #[lang = "from_residual"]
+            fn from_residual(residual: R) -> Self;
+        }
+        #[lang = "try"]
+        pub trait Try: FromResidual<Self::Residual> {
+            type Output;
+            type Residual;
+            #[lang = "from_output"]
+            fn from_output(output: Self::Output) -> Self;
+            #[lang = "branch"]
+            fn branch(self) -> ControlFlow<Self::Residual, Self::Output>;
+        }
+    }
+    pub use self::try_::{ControlFlow, FromResidual, Try};
+    // endregion:try
 }
 
 // region:eq
@@ -310,6 +334,17 @@ pub mod cmp {
     // endregion:ord
 }
 // endregion:eq
+
+// region:fmt
+pub mod fmt {
+    pub struct Error;
+    pub type Result = Result<(), Error>;
+    pub struct Formatter<'a>;
+    pub trait Debug {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+    }
+}
+// endregion:fmt
 
 // region:slice
 pub mod slice {

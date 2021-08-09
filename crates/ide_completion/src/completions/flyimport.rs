@@ -138,6 +138,10 @@ pub(crate) fn import_on_the_fly(acc: &mut Completions, ctx: &CompletionContext) 
         import_assets
             .search_for_imports(&ctx.sema, ctx.config.insert_use.prefix_kind)
             .into_iter()
+            .filter(|import| {
+                !ctx.is_item_hidden(&import.item_to_import)
+                    && !ctx.is_item_hidden(&import.original_item)
+            })
             .sorted_by_key(|located_import| {
                 compute_fuzzy_completion_order_key(
                     &located_import.import_path,
@@ -176,23 +180,18 @@ fn import_assets(ctx: &CompletionContext, fuzzy_name: String) -> Option<ImportAs
     if let Some(dot_receiver) = ctx.dot_receiver() {
         ImportAssets::for_fuzzy_method_call(
             current_module,
-            ctx.sema.type_of_expr(dot_receiver)?,
+            ctx.sema.type_of_expr(dot_receiver)?.original,
             fuzzy_name,
             dot_receiver.syntax().clone(),
         )
     } else {
         let fuzzy_name_length = fuzzy_name.len();
-        let approximate_node = match current_module.definition_source(ctx.db).value {
-            hir::ModuleSource::SourceFile(s) => s.syntax().clone(),
-            hir::ModuleSource::Module(m) => m.syntax().clone(),
-            hir::ModuleSource::BlockExpr(b) => b.syntax().clone(),
-        };
         let assets_for_path = ImportAssets::for_fuzzy_path(
             current_module,
             ctx.path_qual().cloned(),
             fuzzy_name,
             &ctx.sema,
-            approximate_node,
+            ctx.token.parent()?,
         )?;
 
         if matches!(assets_for_path.import_candidate(), ImportCandidate::Path(_))
@@ -697,8 +696,8 @@ fn main() {
 }
 "#,
             expect![[r#"
-                ct SPECIAL_CONST (use dep::test_mod::TestTrait) DEPRECATED
                 fn weird_function() (use dep::test_mod::TestTrait) fn() DEPRECATED
+                ct SPECIAL_CONST (use dep::test_mod::TestTrait) DEPRECATED
             "#]],
         );
     }
@@ -1145,6 +1144,63 @@ mod bar {
 }
             "#,
             expect![[r#""#]],
+        );
+    }
+
+    #[test]
+    fn respects_doc_hidden() {
+        check(
+            r#"
+//- /lib.rs crate:lib deps:dep
+fn f() {
+    ().fro$0
+}
+
+//- /dep.rs crate:dep
+#[doc(hidden)]
+pub trait Private {
+    fn frob(&self) {}
+}
+
+impl<T> Private for T {}
+            "#,
+            expect![[r#""#]],
+        );
+        check(
+            r#"
+//- /lib.rs crate:lib deps:dep
+fn f() {
+    ().fro$0
+}
+
+//- /dep.rs crate:dep
+pub trait Private {
+    #[doc(hidden)]
+    fn frob(&self) {}
+}
+
+impl<T> Private for T {}
+            "#,
+            expect![[r#""#]],
+        );
+    }
+
+    #[test]
+    fn regression_9760() {
+        check(
+            r#"
+struct Struct;
+fn main() {}
+
+mod mud {
+    fn func() {
+        let struct_instance = Stru$0
+    }
+}
+"#,
+            expect![[r#"
+                st Struct (use crate::Struct)
+            "#]],
         );
     }
 }

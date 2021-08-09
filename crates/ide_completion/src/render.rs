@@ -7,6 +7,7 @@ pub(crate) mod enum_variant;
 pub(crate) mod const_;
 pub(crate) mod pattern;
 pub(crate) mod type_alias;
+pub(crate) mod struct_literal;
 
 mod builder_ext;
 
@@ -1348,10 +1349,10 @@ fn foo() {
                 lc foo [type+local]
                 ev Foo::A(…) [type_could_unify]
                 ev Foo::B [type_could_unify]
+                fn foo() []
                 en Foo []
                 fn baz() []
                 fn bar() []
-                fn foo() []
             "#]],
         );
     }

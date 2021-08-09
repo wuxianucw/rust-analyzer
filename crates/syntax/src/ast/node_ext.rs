@@ -8,7 +8,10 @@ use parser::SyntaxKind;
 use rowan::{GreenNodeData, GreenTokenData, WalkEvent};
 
 use crate::{
-    ast::{self, support, AstChildren, AstNode, AstToken, AttrsOwner, NameOwner, SyntaxNode},
+    ast::{
+        self, support, AstChildren, AstNode, AstToken, AttrsOwner, GenericParamsOwner, NameOwner,
+        SyntaxNode,
+    },
     NodeOrToken, SmolStr, SyntaxElement, SyntaxToken, TokenText, T,
 };
 
@@ -53,53 +56,63 @@ impl ast::BlockExpr {
     pub fn is_empty(&self) -> bool {
         self.statements().next().is_none() && self.tail_expr().is_none()
     }
+
+    pub fn as_lone_tail(&self) -> Option<ast::Expr> {
+        self.statements().next().is_none().then(|| self.tail_expr()).flatten()
+    }
 }
 
-impl ast::Expr {
-    /// Preorder walk all the expression's child expressions.
-    pub fn walk(&self, cb: &mut dyn FnMut(ast::Expr)) {
+impl ast::Pat {
+    /// Preorder walk all the pattern's sub patterns.
+    pub fn walk(&self, cb: &mut dyn FnMut(ast::Pat)) {
         let mut preorder = self.syntax().preorder();
         while let Some(event) = preorder.next() {
             let node = match event {
                 WalkEvent::Enter(node) => node,
                 WalkEvent::Leave(_) => continue,
             };
-            match ast::Stmt::cast(node.clone()) {
-                // recursively walk the initializer, skipping potential const pat expressions
-                // let statements aren't usually nested too deeply so this is fine to recurse on
-                Some(ast::Stmt::LetStmt(l)) => {
-                    if let Some(expr) = l.initializer() {
-                        expr.walk(cb);
-                    }
+            let kind = node.kind();
+            match ast::Pat::cast(node) {
+                Some(pat @ ast::Pat::ConstBlockPat(_)) => {
+                    preorder.skip_subtree();
+                    cb(pat);
+                }
+                Some(pat) => {
+                    cb(pat);
+                }
+                // skip const args
+                None if ast::GenericArg::can_cast(kind) => {
                     preorder.skip_subtree();
                 }
-                // Don't skip subtree since we want to process the expression child next
-                Some(ast::Stmt::ExprStmt(_)) => (),
-                // skip inner items which might have their own expressions
-                Some(ast::Stmt::Item(_)) => preorder.skip_subtree(),
-                None => {
-                    // skip const args, those expressions are a different context
-                    if ast::GenericArg::can_cast(node.kind()) {
-                        preorder.skip_subtree();
-                    } else if let Some(expr) = ast::Expr::cast(node) {
-                        let is_different_context = match &expr {
-                            ast::Expr::EffectExpr(effect) => {
-                                matches!(
-                                    effect.effect(),
-                                    ast::Effect::Async(_)
-                                        | ast::Effect::Try(_)
-                                        | ast::Effect::Const(_)
-                                )
-                            }
-                            ast::Expr::ClosureExpr(_) => true,
-                            _ => false,
-                        };
-                        cb(expr);
-                        if is_different_context {
-                            preorder.skip_subtree();
-                        }
-                    }
+                None => (),
+            }
+        }
+    }
+}
+
+impl ast::Type {
+    /// Preorder walk all the type's sub types.
+    pub fn walk(&self, cb: &mut dyn FnMut(ast::Type)) {
+        let mut preorder = self.syntax().preorder();
+        while let Some(event) = preorder.next() {
+            let node = match event {
+                WalkEvent::Enter(node) => node,
+                WalkEvent::Leave(_) => continue,
+            };
+            let kind = node.kind();
+            match ast::Type::cast(node) {
+                Some(ty @ ast::Type::MacroType(_)) => {
+                    preorder.skip_subtree();
+                    cb(ty)
                 }
+                Some(ty) => {
+                    cb(ty);
+                }
+                // skip const args
+                None if ast::ConstArg::can_cast(kind) => {
+                    preorder.skip_subtree();
+                }
+                None => (),
             }
         }
     }
@@ -191,12 +204,12 @@ pub enum AttrKind {
 }
 
 impl AttrKind {
-    /// Returns `true` if the attr_kind is [`Inner`].
+    /// Returns `true` if the attr_kind is [`Inner`](Self::Inner).
     pub fn is_inner(&self) -> bool {
         matches!(self, Self::Inner)
     }
 
-    /// Returns `true` if the attr_kind is [`Outer`].
+    /// Returns `true` if the attr_kind is [`Outer`](Self::Outer).
     pub fn is_outer(&self) -> bool {
         matches!(self, Self::Outer)
     }
@@ -584,6 +597,27 @@ impl ast::Variant {
     }
     pub fn kind(&self) -> StructKind {
         StructKind::from_node(self)
+    }
+}
+
+impl ast::Item {
+    pub fn generic_param_list(&self) -> Option<ast::GenericParamList> {
+        match self {
+            ast::Item::Enum(it) => it.generic_param_list(),
+            ast::Item::Fn(it) => it.generic_param_list(),
+            ast::Item::Impl(it) => it.generic_param_list(),
+            ast::Item::Struct(it) => it.generic_param_list(),
+            ast::Item::Trait(it) => it.generic_param_list(),
+            ast::Item::TypeAlias(it) => it.generic_param_list(),
+            ast::Item::Union(it) => it.generic_param_list(),
+            _ => None,
+        }
+    }
+}
+
+impl ast::Condition {
+    pub fn is_pattern_cond(&self) -> bool {
+        self.let_token().is_some()
     }
 }
 

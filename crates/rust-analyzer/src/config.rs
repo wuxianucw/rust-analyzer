@@ -25,9 +25,12 @@ use serde::{de::DeserializeOwned, Deserialize};
 use vfs::AbsPathBuf;
 
 use crate::{
-    caps::completion_item_edit_resolve, diagnostics::DiagnosticsMapConfig,
-    line_index::OffsetEncoding, lsp_ext::supports_utf8, lsp_ext::WorkspaceSymbolSearchKind,
+    caps::completion_item_edit_resolve,
+    diagnostics::DiagnosticsMapConfig,
+    line_index::OffsetEncoding,
+    lsp_ext::supports_utf8,
     lsp_ext::WorkspaceSymbolSearchScope,
+    lsp_ext::{self, WorkspaceSymbolSearchKind},
 };
 
 // Defines the server-side configuration of the rust-analyzer. We generate
@@ -221,6 +224,9 @@ config_data! {
         /// Whether to show `References` lens. Only applies when
         /// `#rust-analyzer.lens.enable#` is set.
         lens_references: bool = "false",
+        /// Internal config: use custom client-side commands even when the
+        /// client doesn't set the corresponding capability.
+        lens_forceCustomCommands: bool = "true",
 
         /// Disable project auto-discovery in favor of explicitly specified set
         /// of projects.
@@ -405,6 +411,14 @@ pub struct WorkspaceSymbolConfig {
     pub search_kind: WorkspaceSymbolSearchKind,
 }
 
+pub struct ClientCommandsConfig {
+    pub run_single: bool,
+    pub debug_single: bool,
+    pub show_reference: bool,
+    pub goto_location: bool,
+    pub trigger_parameter_hints: bool,
+}
+
 impl Config {
     pub fn new(root_path: AbsPathBuf, caps: ClientCapabilities) -> Self {
         Config {
@@ -581,9 +595,6 @@ impl Config {
     }
     pub fn code_action_group(&self) -> bool {
         self.experimental("codeActionGroup")
-    }
-    pub fn experimental_hover_actions(&self) -> bool {
-        self.experimental("hoverActions")
     }
     pub fn server_status_notification(&self) -> bool {
         self.experimental("serverStatusNotification")
@@ -790,13 +801,13 @@ impl Config {
         }
     }
     pub fn hover_actions(&self) -> HoverActionsConfig {
+        let enable = self.experimental("hoverActions") && self.data.hoverActions_enable;
         HoverActionsConfig {
-            implementations: self.data.hoverActions_enable
-                && self.data.hoverActions_implementations,
-            references: self.data.hoverActions_enable && self.data.hoverActions_references,
-            run: self.data.hoverActions_enable && self.data.hoverActions_run,
-            debug: self.data.hoverActions_enable && self.data.hoverActions_debug,
-            goto_type_def: self.data.hoverActions_enable && self.data.hoverActions_gotoTypeDef,
+            implementations: enable && self.data.hoverActions_implementations,
+            references: enable && self.data.hoverActions_references,
+            run: enable && self.data.hoverActions_run,
+            debug: enable && self.data.hoverActions_debug,
+            goto_type_def: enable && self.data.hoverActions_gotoTypeDef,
         }
     }
     pub fn highlighting_strings(&self) -> bool {
@@ -860,6 +871,24 @@ impl Config {
                 .insert_replace_support?,
             false
         )
+    }
+    pub fn client_commands(&self) -> ClientCommandsConfig {
+        let commands =
+            try_or!(self.caps.experimental.as_ref()?.get("commands")?, &serde_json::Value::Null);
+        let commands: Option<lsp_ext::ClientCommandOptions> =
+            serde_json::from_value(commands.clone()).ok();
+        let force = commands.is_none() && self.data.lens_forceCustomCommands;
+        let commands = commands.map(|it| it.commands).unwrap_or_default();
+
+        let get = |name: &str| commands.iter().any(|it| it == name) || force;
+
+        ClientCommandsConfig {
+            run_single: get("rust-analyzer.runSingle"),
+            debug_single: get("rust-analyzer.debugSingle"),
+            show_reference: get("rust-analyzer.showReferences"),
+            goto_location: get("rust-analyzer.gotoLocation"),
+            trigger_parameter_hints: get("editor.action.triggerParameterHints"),
+        }
     }
 
     pub fn highlight_related(&self) -> HighlightRelatedConfig {

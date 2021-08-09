@@ -192,6 +192,28 @@ pub(crate) fn frobnicate() {}
 }
 
 #[test]
+fn doctest_convert_if_to_bool_then() {
+    check_doc_test(
+        "convert_if_to_bool_then",
+        r#####"
+//- minicore: option
+fn main() {
+    if$0 cond {
+        Some(val)
+    } else {
+        None
+    }
+}
+"#####,
+        r#####"
+fn main() {
+    cond.then(|| val)
+}
+"#####,
+    )
+}
+
+#[test]
 fn doctest_convert_integer_literal() {
     check_doc_test(
         "convert_integer_literal",
@@ -1332,6 +1354,23 @@ impl Foo for Bar {
 }
 
 #[test]
+fn doctest_replace_char_with_string() {
+    check_doc_test(
+        "replace_char_with_string",
+        r#####"
+fn main() {
+    find('{$0');
+}
+"#####,
+        r#####"
+fn main() {
+    find("{");
+}
+"#####,
+    )
+}
+
+#[test]
 fn doctest_replace_derive_with_manual_impl() {
     check_doc_test(
         "replace_derive_with_manual_impl",
@@ -1346,8 +1385,8 @@ trait Debug { fn fmt(&self, f: &mut Formatter) -> Result<()>; }
 struct S;
 
 impl Debug for S {
-    fn fmt(&self, f: &mut Formatter) -> Result<()> {
-        ${0:todo!()}
+    $0fn fmt(&self, f: &mut Formatter) -> Result<()> {
+        f.debug_struct("S").finish()
     }
 }
 "#####,

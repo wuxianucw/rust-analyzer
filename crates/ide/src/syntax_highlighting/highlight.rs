@@ -3,6 +3,7 @@
 use hir::{AsAssocItem, HasVisibility, Semantics};
 use ide_db::{
     defs::{Definition, NameClass, NameRefClass},
+    helpers::try_resolve_derive_input_at,
     RootDatabase, SymbolKind,
 };
 use rustc_hash::FxHashMap;
@@ -87,7 +88,18 @@ pub(super) fn element(
                 _ => Highlight::from(SymbolKind::LifetimeParam) | HlMod::Definition,
             }
         }
-        IDENT if parent_matches::<ast::TokenTree>(&element) => HlTag::None.into(),
+        IDENT if parent_matches::<ast::TokenTree>(&element) => {
+            if let Some((attr, token)) =
+                element.ancestors().nth(2).and_then(ast::Attr::cast).zip(element.as_token())
+            {
+                match try_resolve_derive_input_at(sema, &attr, token) {
+                    Some(makro) => highlight_def(sema.db, krate, Definition::Macro(makro)),
+                    None => HlTag::None.into(),
+                }
+            } else {
+                HlTag::None.into()
+            }
+        }
         p if p.is_punct() => match p {
             T![&] if parent_matches::<ast::BinExpr>(&element) => HlOperator::Bitwise.into(),
             T![&] => {
@@ -111,7 +123,7 @@ pub(super) fn element(
                 let prefix_expr = element.parent().and_then(ast::PrefixExpr::cast)?;
 
                 let expr = prefix_expr.expr()?;
-                let ty = sema.type_of_expr(&expr)?;
+                let ty = sema.type_of_expr(&expr)?.original;
                 if ty.is_raw_ptr() {
                     HlTag::Operator(HlOperator::Other) | HlMod::Unsafe
                 } else if let Some(ast::PrefixOp::Deref) = prefix_expr.op_kind() {
@@ -363,11 +375,14 @@ fn highlight_def(db: &RootDatabase, krate: Option<hir::Crate>, def: Definition) 
                 if let Some(item) = func.as_assoc_item(db) {
                     h |= HlMod::Associated;
                     match func.self_param(db) {
-                        Some(sp) => {
-                            if let hir::Access::Exclusive = sp.access(db) {
+                        Some(sp) => match sp.access(db) {
+                            hir::Access::Exclusive => {
                                 h |= HlMod::Mutable;
+                                h |= HlMod::Reference;
                             }
-                        }
+                            hir::Access::Shared => h |= HlMod::Reference,
+                            _ => {}
+                        },
                         None => h |= HlMod::Static,
                     }
 
@@ -476,6 +491,9 @@ fn highlight_def(db: &RootDatabase, krate: Option<hir::Crate>, def: Definition) 
             if local.is_mut(db) || ty.is_mutable_reference() {
                 h |= HlMod::Mutable;
             }
+            if local.is_ref(db) || ty.is_reference() {
+                h |= HlMod::Reference;
+            }
             if ty.as_callable(db).is_some() || ty.impls_fnonce(db) {
                 h |= HlMod::Callable;
             }
@@ -537,13 +555,16 @@ fn highlight_method_call(
 
     if let Some(self_param) = func.self_param(sema.db) {
         match self_param.access(sema.db) {
-            hir::Access::Shared => (),
-            hir::Access::Exclusive => h |= HlMod::Mutable,
+            hir::Access::Shared => h |= HlMod::Reference,
+            hir::Access::Exclusive => {
+                h |= HlMod::Mutable;
+                h |= HlMod::Reference;
+            }
             hir::Access::Owned => {
                 if let Some(receiver_ty) =
                     method_call.receiver().and_then(|it| sema.type_of_expr(&it))
                 {
-                    if !receiver_ty.is_copy(sema.db) {
+                    if !receiver_ty.adjusted().is_copy(sema.db) {
                         h |= HlMod::Consuming
                     }
                 }

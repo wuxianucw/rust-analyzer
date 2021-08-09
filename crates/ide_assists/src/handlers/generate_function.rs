@@ -1,4 +1,4 @@
-use hir::HirDisplay;
+use hir::{HirDisplay, TypeInfo};
 use ide_db::{base_db::FileId, helpers::SnippetCap};
 use rustc_hash::{FxHashMap, FxHashSet};
 use stdx::to_lower_snake_case;
@@ -12,6 +12,7 @@ use syntax::{
 };
 
 use crate::{
+    utils::useless_type_special_case,
     utils::{render_snippet, Cursor},
     AssistContext, AssistId, AssistKind, Assists,
 };
@@ -152,7 +153,8 @@ impl FunctionBuilder {
         // type, but that the current state of their code doesn't allow that return type
         // to be accurately inferred.
         let (ret_ty, should_render_snippet) = {
-            match ctx.sema.type_of_expr(&ast::Expr::CallExpr(call.clone())) {
+            match ctx.sema.type_of_expr(&ast::Expr::CallExpr(call.clone())).map(TypeInfo::original)
+            {
                 Some(ty) if ty.is_unknown() || ty.is_unit() => (make::ty_unit(), true),
                 Some(ty) => {
                     let rendered = ty.display_source_code(ctx.db(), target_module.into());
@@ -257,7 +259,17 @@ fn fn_args(
             None => String::from("arg"),
         });
         arg_types.push(match fn_arg_type(ctx, target_module, &arg) {
-            Some(ty) => ty,
+            Some(ty) => {
+                if ty.len() > 0 && ty.starts_with('&') {
+                    if let Some((new_ty, _)) = useless_type_special_case("", &ty[1..].to_owned()) {
+                        new_ty
+                    } else {
+                        ty
+                    }
+                } else {
+                    ty
+                }
+            }
             None => String::from("()"),
         });
     }
@@ -320,7 +332,7 @@ fn fn_arg_type(
     target_module: hir::Module,
     fn_arg: &ast::Expr,
 ) -> Option<String> {
-    let ty = ctx.sema.type_of_expr(fn_arg)?;
+    let ty = ctx.sema.type_of_expr(fn_arg)?.adjusted();
     if ty.is_unknown() {
         return None;
     }

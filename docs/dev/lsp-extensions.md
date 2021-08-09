@@ -1,5 +1,5 @@
 <!---
-lsp_ext.rs hash: 3b2931972b33198b
+lsp_ext.rs hash: ad52054176909945
 
 If you need to change the above hash to make the test pass, please check if you
 need to adjust this doc as well and ping this issue:
@@ -13,7 +13,7 @@ need to adjust this doc as well and ping this issue:
 This document describes LSP extensions used by rust-analyzer.
 It's a best effort document, when in doubt, consult the source (and send a PR with clarification ;-) ).
 We aim to upstream all non Rust-specific extensions to the protocol, but this is not a top priority.
-All capabilities are enabled via `experimental` field of `ClientCapabilities` or `ServerCapabilities`.
+All capabilities are enabled via the `experimental` field of `ClientCapabilities` or `ServerCapabilities`.
 Requests which we hope to upstream live under `experimental/` namespace.
 Requests, which are likely to always remain specific to `rust-analyzer` are under `rust-analyzer/` namespace.
 
@@ -27,9 +27,9 @@ https://clangd.llvm.org/extensions.html#utf-8-offsets
 
 ## Configuration in `initializationOptions`
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/567
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/567
 
-The `initializationOptions` filed of the `InitializeParams` of the initialization request should contain `"rust-analyzer"` section of the configuration.
+The `initializationOptions` field of the `InitializeParams` of the initialization request should contain the `"rust-analyzer"` section of the configuration.
 
 `rust-analyzer` normally sends a `"workspace/configuration"` request with `{ "items": ["rust-analyzer"] }` payload.
 However, the server can't do this during initialization.
@@ -43,7 +43,7 @@ If a language client does not know about `rust-analyzer`'s configuration options
 
 ## Snippet `TextEdit`
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/724
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/724
 
 **Experimental Client Capability:** `{ "snippetTextEdit": boolean }`
 
@@ -77,11 +77,11 @@ At the moment, rust-analyzer guarantees that only a single edit will have `Inser
 
 ## `CodeAction` Groups
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/994
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/994
 
 **Experimental Client Capability:** `{ "codeActionGroup": boolean }`
 
-If this capability is set, `CodeAction` returned from the server contain an additional field, `group`:
+If this capability is set, `CodeAction`s returned from the server contain an additional field, `group`:
 
 ```typescript
 interface CodeAction {
@@ -124,7 +124,7 @@ Invoking code action at this position will yield two code actions for importing 
 
 ## Parent Module
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/1002
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/1002
 
 **Experimental Server Capability:** `{ "parentModule": boolean }`
 
@@ -158,7 +158,7 @@ mod foo;
 
 ## Join Lines
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/992
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/992
 
 **Experimental Server Capability:** `{ "joinLines": boolean }`
 
@@ -205,11 +205,11 @@ fn main() {
 
 ## On Enter
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/1001
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/1001
 
 **Experimental Server Capability:** `{ "onEnter": boolean }`
 
-This request is sent from client to server to handle <kbd>Enter</kbd> keypress.
+This request is sent from client to server to handle the <kbd>Enter</kbd> key press.
 
 **Method:** `experimental/onEnter`
 
@@ -275,9 +275,9 @@ interface SsrParams {
     parseOnly: bool,
     /// The current text document. This and `position` will be used to determine in what scope
     /// paths in `query` should be resolved.
-    textDocument: lc.TextDocumentIdentifier;
+    textDocument: TextDocumentIdentifier;
     /// Position where SSR was invoked.
-    position: lc.Position;
+    position: Position;
 }
 ```
 
@@ -298,7 +298,7 @@ SSR with query `foo($a, $b) ==>> ($a).foo($b)` will transform, eg `foo(y + 5, z)
 
 ## Matching Brace
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/999
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/999
 
 **Experimental Server Capability:** `{ "matchingBrace": boolean }`
 
@@ -343,7 +343,7 @@ Moreover, it would be cool if editors didn't need to implement even basic langua
 
 ## Runnables
 
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/944
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/944
 
 **Experimental Server Capability:** `{ "runnables": { "kinds": string[] } }`
 
@@ -617,7 +617,9 @@ Such actions on the client side are appended to a hover bottom as command links:
 
 ## Open Cargo.toml
 
-**Issue:** https://github.com/rust-analyzer/rust-analyzer/issues/6462
+**Upstream Issue:** https://github.com/rust-analyzer/rust-analyzer/issues/6462
+
+**Experimental Server Capability:** `{ "openCargoToml": boolean }`
 
 This request is sent from client to server to open the current project's Cargo.toml
 
@@ -656,9 +658,36 @@ interface TestInfo {
 }
 ```
 
-## Hover Actions
+## Hover Range
 
-**Issue:** https://github.com/rust-analyzer/rust-analyzer/issues/6823
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/377
+
+**Experimental Server Capability:** { "hoverRange": boolean }
+
+This extension allows passing a `Range` as a `position` field of `HoverParams`.
+The primary use-case is to use the hover request to show the type of the expression currently selected.
+
+```typescript
+interface HoverParams extends WorkDoneProgressParams {
+    textDocument: TextDocumentIdentifier;
+    position: Range | Position;
+}
+```
+Whenever the client sends a `Range`, it is understood as the current selection and any hover included in the range will show the type of the expression if possible.
+
+### Example
+
+```rust
+fn main() {
+    let expression = $01 + 2 * 3$0;
+}
+```
+
+Triggering a hover inside the selection above will show a result of `i32`.
+
+## Move Item
+
+**Upstream Issue:** https://github.com/rust-analyzer/rust-analyzer/issues/6823
 
 This request is sent from client to server to move item under cursor or selection in some direction.
 
@@ -670,8 +699,8 @@ This request is sent from client to server to move item under cursor or selectio
 
 ```typescript
 export interface MoveItemParams {
-    textDocument: lc.TextDocumentIdentifier,
-    range: lc.Range,
+    textDocument: TextDocumentIdentifier,
+    range: Range,
     direction: Direction
 }
 
@@ -683,7 +712,7 @@ export const enum Direction {
 
 ## Workspace Symbols Filtering
 
-**Issue:** https://github.com/rust-analyzer/rust-analyzer/pull/7698
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/941
 
 **Experimental Server Capability:** `{ "workspaceSymbolScopeKindFiltering": boolean }`
 
@@ -712,5 +741,27 @@ const enum WorkspaceSymbolSearchScope {
 const enum WorkspaceSymbolSearchKind {
     OnlyTypes = "onlyTypes",
     AllSymbols = "allSymbols"
+}
+```
+
+## Client Commands
+
+**Upstream Issue:** https://github.com/microsoft/language-server-protocol/issues/642
+
+**Experimental Client Capability:** `{ "commands?": ClientCommandOptions }`
+
+Certain LSP types originating on the server, notably code lenses, embed commands.
+Commands can be serviced either by the server or by the client.
+However, the server doesn't know which commands are available on the client.
+
+This extensions allows the client to communicate this info.
+
+
+```typescript
+export interface ClientCommandOptions {
+    /**
+     * The commands to be executed on the client
+     */
+    commands: string[];
 }
 ```
