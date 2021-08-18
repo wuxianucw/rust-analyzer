@@ -839,6 +839,7 @@ crate  -> krate
 enum   -> enum_
 fn     -> func
 impl   -> imp
+macro  -> mac
 mod    -> module
 struct -> strukt
 trait  -> trait_
@@ -914,6 +915,60 @@ if let Some(expected_type) = ctx.expected_type.as_ref() {
 
 **Rationale:** `match` is almost always more compact.
 The `else` branch can get a more precise pattern: `None` or `Err(_)` instead of `_`.
+
+## Match Ergonomics
+
+Don't use the `ref` keyword.
+
+**Rationale:** consistency & simplicity.
+`ref` was required before [match ergonomics](https://github.com/rust-lang/rfcs/blob/master/text/2005-match-ergonomics.md).
+Today, it is redundant.
+Between `ref` and mach ergonomics, the latter is more ergonomic in most cases, and is simpler (does not require a keyword).
+
+## Functional Combinators
+
+Use high order monadic combinators like `map`, `then` when they are a natural choice; don't bend the code to fit into some combinator.
+If writing a chain of combinators creates friction, replace them with control flow constructs: `for`, `if`, `match`.
+Mostly avoid `bool::then` and `Option::filter`.
+
+```rust
+// GOOD
+if !x.cond() {
+    return None;
+}
+Some(x)
+
+// BAD
+Some(x).filter(|it| it.cond())
+```
+
+This rule is more "soft" then others, and boils down mostly to taste.
+The guiding principle behind this rule is that code should be dense in computation, and sparse in the number of expressions per line.
+The second example contains *less* computation -- the `filter` function is an indirection for `if`, it doesn't do any useful work by itself.
+At the same time, it is more crowded -- it takes more time to visually scan it.
+
+**Rationale:** consistency, playing to language's strengths.
+Rust has first-class support for imperative control flow constructs like `for` and `if`, while functions are less first-class due to lack of universal function type, currying, and non-first-class effects (`?`, `.await`).
+
+## Turbofish
+
+Prefer type ascription over the turbofish.
+When ascribing types, avoid `_`
+
+```rust
+// GOOD
+let mutable: Vec<T> = old.into_iter().map(|it| builder.make_mut(it)).collect();
+
+// BAD
+let mutable: Vec<_> = old.into_iter().map(|it| builder.make_mut(it)).collect();
+
+// BAD
+let mutable = old.into_iter().map(|it| builder.make_mut(it)).collect::<Vec<_>>();
+```
+
+**Rationale:** consistency, readability.
+If compiler struggles to infer the type, the human would as well.
+Having the result type specified up-front helps with understanding what the chain of iterator methods is doing.
 
 ## Helper Functions
 

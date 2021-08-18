@@ -37,6 +37,10 @@ pub(crate) fn move_guard_to_arm_body(acc: &mut Assists, ctx: &AssistContext) -> 
     let guard = match_arm.guard()?;
     let space_before_guard = guard.syntax().prev_sibling_or_token();
 
+    // FIXME: support `if let` guards too
+    if guard.let_token().is_some() {
+        return None;
+    }
     let guard_condition = guard.expr()?;
     let arm_expr = match_arm.expr()?;
     let if_expr = make::expr_if(
@@ -115,7 +119,7 @@ pub(crate) fn move_arm_cond_to_match_guard(acc: &mut Assists, ctx: &AssistContex
         return None;
     }
     // Not support moving if let to arm guard
-    if cond.pat().is_some() {
+    if cond.is_pattern_cond() {
         return None;
     }
 

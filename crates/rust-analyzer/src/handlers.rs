@@ -3,8 +3,8 @@
 //! `ide` crate.
 
 use std::{
-    io::{Read, Write as _},
-    process::{self, Command, Stdio},
+    io::Write as _,
+    process::{self, Stdio},
 };
 
 use ide::{
@@ -79,12 +79,6 @@ pub(crate) fn handle_analyzer_status(
             .status(file_id)
             .unwrap_or_else(|_| "Analysis retrieval was cancelled".to_owned()),
     );
-    format_to!(buf, "\n\nRequests:\n");
-    let requests = snap.latest_requests.read();
-    for (is_last, r) in requests.iter() {
-        let mark = if is_last { "*" } else { " " };
-        format_to!(buf, "{}{:4} {:<36}{}ms\n", mark, r.id, r.method, r.duration.as_millis());
-    }
     Ok(buf)
 }
 
@@ -138,19 +132,7 @@ pub(crate) fn handle_view_crate_graph(
 ) -> Result<String> {
     let _p = profile::span("handle_view_crate_graph");
     let dot = snap.analysis.view_crate_graph(params.full)??;
-
-    // We shell out to `dot` to render to SVG, as there does not seem to be a pure-Rust renderer.
-    let child = Command::new("dot")
-        .arg("-Tsvg")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to spawn `dot`: {}", err))?;
-    child.stdin.unwrap().write_all(dot.as_bytes())?;
-
-    let mut svg = String::new();
-    child.stdout.unwrap().read_to_string(&mut svg)?;
-    Ok(svg)
+    Ok(dot)
 }
 
 pub(crate) fn handle_expand_macro(

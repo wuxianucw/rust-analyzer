@@ -446,9 +446,19 @@ fn project_json_to_crate_graph(
 
     for (from, krate) in project.crates() {
         if let Some(&from) = crates.get(&from) {
-            if let Some((public_deps, _proc_macro)) = &sysroot_deps {
+            if let Some((public_deps, libproc_macro)) = &sysroot_deps {
                 for (name, to) in public_deps.iter() {
                     add_dep(&mut crate_graph, from, name.clone(), *to)
+                }
+                if krate.is_proc_macro {
+                    if let Some(proc_macro) = libproc_macro {
+                        add_dep(
+                            &mut crate_graph,
+                            from,
+                            CrateName::new("proc_macro").unwrap(),
+                            *proc_macro,
+                        );
+                    }
                 }
             }
 
@@ -523,15 +533,13 @@ fn cargo_to_crate_graph(
                     lib_tgt = Some((crate_id, cargo[tgt].name.clone()));
                     pkg_to_lib_crate.insert(pkg, crate_id);
                 }
-                if cargo[tgt].is_proc_macro {
-                    if let Some(proc_macro) = libproc_macro {
-                        add_dep(
-                            &mut crate_graph,
-                            crate_id,
-                            CrateName::new("proc_macro").unwrap(),
-                            proc_macro,
-                        );
-                    }
+                if let Some(proc_macro) = libproc_macro {
+                    add_dep(
+                        &mut crate_graph,
+                        crate_id,
+                        CrateName::new("proc_macro").unwrap(),
+                        proc_macro,
+                    );
                 }
 
                 pkg_crates.entry(pkg).or_insert_with(Vec::new).push((crate_id, cargo[tgt].kind));

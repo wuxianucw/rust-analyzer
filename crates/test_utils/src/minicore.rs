@@ -17,6 +17,7 @@
 //!     deref_mut: deref
 //!     index: sized
 //!     fn:
+//!     try:
 //!     pin:
 //!     future: pin
 //!     option:
@@ -24,12 +25,15 @@
 //!     iterator: option
 //!     iterators: iterator, fn
 //!     default: sized
+//!     hash:
 //!     clone: sized
 //!     copy: clone
 //!     from: sized
 //!     eq: sized
 //!     ord: eq, option
 //!     derive:
+//!     fmt: result
+//!     bool_impl: option, fn
 
 pub mod marker {
     // region:sized
@@ -84,6 +88,16 @@ pub mod default {
     }
 }
 // endregion:default
+
+// region:hash
+pub mod hash {
+    pub trait Hasher {}
+
+    pub trait Hash {
+        fn hash<H: Hasher>(&self, state: &mut H);
+    }
+}
+// endregion:hash
 
 // region:clone
 pub mod clone {
@@ -266,6 +280,28 @@ pub mod ops {
     }
     pub use self::function::{Fn, FnMut, FnOnce};
     // endregion:fn
+    // region:try
+    mod try_ {
+        pub enum ControlFlow<B, C = ()> {
+            Continue(C),
+            Break(B),
+        }
+        pub trait FromResidual<R = Self::Residual> {
+            #[lang = "from_residual"]
+            fn from_residual(residual: R) -> Self;
+        }
+        #[lang = "try"]
+        pub trait Try: FromResidual<Self::Residual> {
+            type Output;
+            type Residual;
+            #[lang = "from_output"]
+            fn from_output(output: Self::Output) -> Self;
+            #[lang = "branch"]
+            fn branch(self) -> ControlFlow<Self::Residual, Self::Output>;
+        }
+    }
+    pub use self::try_::{ControlFlow, FromResidual, Try};
+    // endregion:try
 }
 
 // region:eq
@@ -310,6 +346,17 @@ pub mod cmp {
     // endregion:ord
 }
 // endregion:eq
+
+// region:fmt
+pub mod fmt {
+    pub struct Error;
+    pub type Result = Result<(), Error>;
+    pub struct Formatter<'a>;
+    pub trait Debug {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+    }
+}
+// endregion:fmt
 
 // region:slice
 pub mod slice {
@@ -521,6 +568,19 @@ mod macros {
     }
 }
 // endregion:derive
+
+// region:bool_impl
+#[lang = "bool"]
+impl bool {
+    pub fn then<T, F: FnOnce() -> T>(self, f: F) -> Option<T> {
+        if self {
+            Some(f())
+        } else {
+            None
+        }
+    }
+}
+// endregion:bool_impl
 
 pub mod prelude {
     pub mod v1 {

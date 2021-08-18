@@ -13,12 +13,6 @@ use tt::buffer::{Cursor, TokenBuffer};
 use crate::{subtree_source::SubtreeTokenSource, tt_iter::TtIter};
 use crate::{ExpandError, TokenMap};
 
-/// Convert the syntax tree (what user has written) to a `TokenTree` (what macro
-/// will consume).
-pub fn ast_to_token_tree(ast: &impl ast::AstNode) -> (tt::Subtree, TokenMap) {
-    syntax_node_to_token_tree(ast.syntax())
-}
-
 /// Convert the syntax node to a `TokenTree` (what macro
 /// will consume).
 pub fn syntax_node_to_token_tree(node: &SyntaxNode) -> (tt::Subtree, TokenMap) {
@@ -711,8 +705,8 @@ mod tests {
     use crate::tests::parse_macro;
     use parser::TokenSource;
     use syntax::{
-        algo::{insert_children, InsertPosition},
-        ast::AstNode,
+        ast::{make, AstNode},
+        ted,
     };
     use test_utils::assert_eq_text;
 
@@ -778,42 +772,26 @@ mod tests {
 
     #[test]
     fn test_token_tree_last_child_is_white_space() {
-        let source_file = ast::SourceFile::parse("f!({} );").ok().unwrap();
+        let source_file = ast::SourceFile::parse("f!{}").ok().unwrap();
         let macro_call = source_file.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
         let token_tree = macro_call.token_tree().unwrap();
 
         // Token Tree now is :
         // TokenTree
-        // - T!['(']
         // - TokenTree
         //   - T!['{']
         //   - T!['}']
-        // - WHITE_SPACE
-        // - T![')']
 
-        let rbrace =
-            token_tree.syntax().descendants_with_tokens().find(|it| it.kind() == T!['}']).unwrap();
-        let space = token_tree
-            .syntax()
-            .descendants_with_tokens()
-            .find(|it| it.kind() == SyntaxKind::WHITESPACE)
-            .unwrap();
-
-        // reorder th white space, such that the white is inside the inner token-tree.
-        let token_tree = insert_children(
-            &rbrace.parent().unwrap(),
-            InsertPosition::Last,
-            std::iter::once(space),
-        );
-
+        let token_tree = token_tree.clone_for_update();
+        ted::append_child(token_tree.syntax(), make::tokens::single_space());
+        let token_tree = token_tree.clone_subtree();
         // Token Tree now is :
         // TokenTree
         // - T!['{']
         // - T!['}']
         // - WHITE_SPACE
-        let token_tree = ast::TokenTree::cast(token_tree).unwrap();
-        let tt = ast_to_token_tree(&token_tree).0;
 
+        let tt = syntax_node_to_token_tree(token_tree.syntax()).0;
         assert_eq!(tt.delimiter_kind(), Some(tt::DelimiterKind::Brace));
     }
 
@@ -821,7 +799,7 @@ mod tests {
     fn test_token_tree_multi_char_punct() {
         let source_file = ast::SourceFile::parse("struct Foo { a: x::Y }").ok().unwrap();
         let struct_def = source_file.syntax().descendants().find_map(ast::Struct::cast).unwrap();
-        let tt = ast_to_token_tree(&struct_def).0;
+        let tt = syntax_node_to_token_tree(struct_def.syntax()).0;
         token_tree_to_syntax_node(&tt, FragmentKind::Item).unwrap();
     }
 
@@ -829,7 +807,7 @@ mod tests {
     fn test_missing_closing_delim() {
         let source_file = ast::SourceFile::parse("m!(x").tree();
         let node = source_file.syntax().descendants().find_map(ast::TokenTree::cast).unwrap();
-        let tt = ast_to_token_tree(&node).0.to_string();
+        let tt = syntax_node_to_token_tree(node.syntax()).0.to_string();
         assert_eq_text!(&*tt, "( x");
     }
 }

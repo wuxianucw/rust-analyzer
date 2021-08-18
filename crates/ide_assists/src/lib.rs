@@ -55,12 +55,13 @@ mod handlers {
     mod apply_demorgan;
     mod auto_import;
     mod change_visibility;
-    mod convert_integer_literal;
+    mod convert_bool_then;
     mod convert_comment_block;
-    mod convert_iter_for_each_to_for;
+    mod convert_integer_literal;
     mod convert_into_to_from;
+    mod convert_iter_for_each_to_for;
     mod convert_tuple_struct_to_named_struct;
-    mod early_return;
+    mod convert_to_guarded_return;
     mod expand_glob_import;
     mod extract_function;
     mod extract_struct_from_enum_variant;
@@ -73,7 +74,6 @@ mod handlers {
     mod flip_trait_bound;
     mod generate_default_from_enum_variant;
     mod generate_default_from_new;
-    mod generate_is_empty_from_len;
     mod generate_deref;
     mod generate_derive;
     mod generate_enum_is_method;
@@ -82,6 +82,7 @@ mod handlers {
     mod generate_function;
     mod generate_getter;
     mod generate_impl;
+    mod generate_is_empty_from_len;
     mod generate_new;
     mod generate_setter;
     mod infer_function_return_type;
@@ -110,6 +111,7 @@ mod handlers {
     mod replace_qualified_name_with_use;
     mod replace_string_with_char;
     mod split_import;
+    mod sort_items;
     mod toggle_ignore;
     mod unmerge_use;
     mod unwrap_block;
@@ -124,12 +126,14 @@ mod handlers {
             apply_demorgan::apply_demorgan,
             auto_import::auto_import,
             change_visibility::change_visibility,
-            convert_integer_literal::convert_integer_literal,
+            convert_bool_then::convert_bool_then_to_if,
+            convert_bool_then::convert_if_to_bool_then,
             convert_comment_block::convert_comment_block,
-            convert_iter_for_each_to_for::convert_iter_for_each_to_for,
+            convert_integer_literal::convert_integer_literal,
             convert_into_to_from::convert_into_to_from,
+            convert_iter_for_each_to_for::convert_iter_for_each_to_for,
+            convert_to_guarded_return::convert_to_guarded_return,
             convert_tuple_struct_to_named_struct::convert_tuple_struct_to_named_struct,
-            early_return::convert_to_guarded_return,
             expand_glob_import::expand_glob_import,
             extract_struct_from_enum_variant::extract_struct_from_enum_variant,
             extract_type_alias::extract_type_alias,
@@ -140,7 +144,6 @@ mod handlers {
             flip_trait_bound::flip_trait_bound,
             generate_default_from_enum_variant::generate_default_from_enum_variant,
             generate_default_from_new::generate_default_from_new,
-            generate_is_empty_from_len::generate_is_empty_from_len,
             generate_deref::generate_deref,
             generate_derive::generate_derive,
             generate_enum_is_method::generate_enum_is_method,
@@ -148,11 +151,9 @@ mod handlers {
             generate_enum_projection_method::generate_enum_try_into_method,
             generate_from_impl_for_enum::generate_from_impl_for_enum,
             generate_function::generate_function,
-            generate_getter::generate_getter,
-            generate_getter::generate_getter_mut,
             generate_impl::generate_impl,
+            generate_is_empty_from_len::generate_is_empty_from_len,
             generate_new::generate_new,
-            generate_setter::generate_setter,
             infer_function_return_type::infer_function_return_type,
             inline_call::inline_call,
             inline_local_variable::inline_local_variable,
@@ -181,6 +182,7 @@ mod handlers {
             replace_impl_trait_with_generic::replace_impl_trait_with_generic,
             replace_let_with_if_let::replace_let_with_if_let,
             replace_qualified_name_with_use::replace_qualified_name_with_use,
+            sort_items::sort_items,
             split_import::split_import,
             toggle_ignore::toggle_ignore,
             unmerge_use::unmerge_use,
@@ -199,6 +201,10 @@ mod handlers {
             //
             extract_variable::extract_variable,
             extract_function::extract_function,
+            //
+            generate_getter::generate_getter,
+            generate_getter::generate_getter_mut,
+            generate_setter::generate_setter,
             // Are you sure you want to add new assist here, and not to the
             // sorted list above?
         ]

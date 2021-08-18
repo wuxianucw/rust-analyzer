@@ -8,7 +8,7 @@ use std::{
 
 use chalk_ir::{cast::Cast, fold::Shift, Mutability, TyVariableKind};
 use hir_def::{
-    expr::{Array, BinaryOp, Expr, ExprId, Literal, Statement, UnaryOp},
+    expr::{Array, BinaryOp, Expr, ExprId, Literal, MatchGuard, Statement, UnaryOp},
     path::{GenericArg, GenericArgs},
     resolver::resolver_for_expr,
     AssocContainerId, FieldId, Lookup,
@@ -366,11 +366,20 @@ impl<'a> InferenceContext<'a> {
                 for arm in arms {
                     self.diverges = Diverges::Maybe;
                     let _pat_ty = self.infer_pat(arm.pat, &input_ty, BindingMode::default());
-                    if let Some(guard_expr) = arm.guard {
-                        self.infer_expr(
-                            guard_expr,
-                            &Expectation::has_type(TyKind::Scalar(Scalar::Bool).intern(&Interner)),
-                        );
+                    match arm.guard {
+                        Some(MatchGuard::If { expr: guard_expr }) => {
+                            self.infer_expr(
+                                guard_expr,
+                                &Expectation::has_type(
+                                    TyKind::Scalar(Scalar::Bool).intern(&Interner),
+                                ),
+                            );
+                        }
+                        Some(MatchGuard::IfLet { expr, pat }) => {
+                            let input_ty = self.infer_expr(expr, &Expectation::none());
+                            let _pat_ty = self.infer_pat(pat, &input_ty, BindingMode::default());
+                        }
+                        _ => {}
                     }
 
                     let arm_ty = self.infer_expr_inner(arm.expr, &expected);

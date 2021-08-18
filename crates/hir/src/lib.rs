@@ -82,14 +82,14 @@ use crate::db::{DefDatabase, HirDatabase};
 pub use crate::{
     attrs::{HasAttrs, Namespace},
     diagnostics::{
-        AnyDiagnostic, BreakOutsideOfLoop, InactiveCode, IncorrectCase, MacroError,
-        MismatchedArgCount, MissingFields, MissingMatchArms, MissingOkOrSomeInTailExpr,
+        AddReferenceHere, AnyDiagnostic, BreakOutsideOfLoop, InactiveCode, IncorrectCase,
+        MacroError, MismatchedArgCount, MissingFields, MissingMatchArms, MissingOkOrSomeInTailExpr,
         MissingUnsafe, NoSuchField, RemoveThisSemicolon, ReplaceFilterMapNextWithFindMap,
         UnimplementedBuiltinMacro, UnresolvedExternCrate, UnresolvedImport, UnresolvedMacroCall,
         UnresolvedModule, UnresolvedProcMacro,
     },
     has_source::HasSource,
-    semantics::{PathResolution, Semantics, SemanticsScope},
+    semantics::{PathResolution, Semantics, SemanticsScope, TypeInfo},
 };
 
 // Be careful with these re-exports.
@@ -217,7 +217,7 @@ impl Crate {
 
         let doc_url = doc_attr_q.tt_values().map(|tt| {
             let name = tt.token_trees.iter()
-                .skip_while(|tt| !matches!(tt, TokenTree::Leaf(Leaf::Ident(Ident{text: ref ident, ..})) if ident == "html_root_url"))
+                .skip_while(|tt| !matches!(tt, TokenTree::Leaf(Leaf::Ident(Ident { text, ..} )) if text == "html_root_url"))
                 .nth(2);
 
             match name {
@@ -1251,6 +1251,12 @@ impl Function {
                         Err(SyntheticSyntax) => (),
                     }
                 }
+                BodyValidationDiagnostic::AddReferenceHere { arg_expr, mutability } => {
+                    match source_map.expr_syntax(arg_expr) {
+                        Ok(expr) => acc.push(AddReferenceHere { expr, mutability }.into()),
+                        Err(SyntheticSyntax) => (),
+                    }
+                }
             }
         }
 
@@ -1391,8 +1397,13 @@ impl Const {
         db.const_data(self.id).name.clone()
     }
 
-    pub fn type_ref(self, db: &dyn HirDatabase) -> TypeRef {
-        db.const_data(self.id).type_ref.as_ref().clone()
+    pub fn ty(self, db: &dyn HirDatabase) -> Type {
+        let data = db.const_data(self.id);
+        let resolver = self.id.resolver(db.upcast());
+        let krate = self.id.lookup(db.upcast()).container.krate(db);
+        let ctx = hir_ty::TyLoweringContext::new(db, &resolver);
+        let ty = ctx.lower_ty(&data.type_ref);
+        Type::new_with_resolver_inner(db, krate.id, &resolver, ty)
     }
 }
 
@@ -1420,6 +1431,15 @@ impl Static {
 
     pub fn is_mut(self, db: &dyn HirDatabase) -> bool {
         db.static_data(self.id).mutable
+    }
+
+    pub fn ty(self, db: &dyn HirDatabase) -> Type {
+        let data = db.static_data(self.id);
+        let resolver = self.id.resolver(db.upcast());
+        let krate = self.id.lookup(db.upcast()).container.krate();
+        let ctx = hir_ty::TyLoweringContext::new(db, &resolver);
+        let ty = ctx.lower_ty(&data.type_ref);
+        Type::new_with_resolver_inner(db, krate, &resolver, ty)
     }
 }
 
@@ -1847,6 +1867,14 @@ impl Local {
         matches!(&body[self.pat_id], Pat::Bind { mode: BindingAnnotation::Mutable, .. })
     }
 
+    pub fn is_ref(self, db: &dyn HirDatabase) -> bool {
+        let body = db.body(self.parent);
+        matches!(
+            &body[self.pat_id],
+            Pat::Bind { mode: BindingAnnotation::Ref | BindingAnnotation::RefMut, .. }
+        )
+    }
+
     pub fn parent(self, _db: &dyn HirDatabase) -> DefWithBody {
         self.parent.into()
     }
@@ -2202,6 +2230,10 @@ impl Type {
         matches!(self.ty.kind(&Interner), TyKind::Ref(hir_ty::Mutability::Mut, ..))
     }
 
+    pub fn is_reference(&self) -> bool {
+        matches!(self.ty.kind(&Interner), TyKind::Ref(..))
+    }
+
     pub fn is_usize(&self) -> bool {
         matches!(self.ty.kind(&Interner), TyKind::Scalar(Scalar::Uint(UintTy::Usize)))
     }
@@ -2397,9 +2429,9 @@ impl Type {
     }
 
     pub fn fields(&self, db: &dyn HirDatabase) -> Vec<(Field, Type)> {
-        let (variant_id, substs) = match *self.ty.kind(&Interner) {
-            TyKind::Adt(hir_ty::AdtId(AdtId::StructId(s)), ref substs) => (s.into(), substs),
-            TyKind::Adt(hir_ty::AdtId(AdtId::UnionId(u)), ref substs) => (u.into(), substs),
+        let (variant_id, substs) = match self.ty.kind(&Interner) {
+            TyKind::Adt(hir_ty::AdtId(AdtId::StructId(s)), substs) => ((*s).into(), substs),
+            TyKind::Adt(hir_ty::AdtId(AdtId::UnionId(u)), substs) => ((*u).into(), substs),
             _ => return Vec::new(),
         };
 

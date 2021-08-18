@@ -30,7 +30,6 @@ mod semantic_tokens;
 mod markdown;
 mod diagnostics;
 mod line_index;
-mod request_metrics;
 mod lsp_utils;
 mod thread_pool;
 mod mem_docs;
@@ -42,8 +41,9 @@ pub mod config;
 #[cfg(test)]
 mod integrated_benchmarks;
 
-use serde::de::DeserializeOwned;
 use std::fmt;
+
+use serde::de::DeserializeOwned;
 
 pub use crate::{caps::server_capabilities, main_loop::main_loop};
 
@@ -51,7 +51,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn from_json<T: DeserializeOwned>(what: &'static str, json: serde_json::Value) -> Result<T> {
-    let res = serde_path_to_error::deserialize(&json)
+    let res = serde_json::from_value(json.clone())
         .map_err(|e| format!("Failed to deserialize {}: {}; {}", what, e, json))?;
     Ok(res)
 }

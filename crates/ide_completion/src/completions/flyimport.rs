@@ -180,23 +180,18 @@ fn import_assets(ctx: &CompletionContext, fuzzy_name: String) -> Option<ImportAs
     if let Some(dot_receiver) = ctx.dot_receiver() {
         ImportAssets::for_fuzzy_method_call(
             current_module,
-            ctx.sema.type_of_expr(dot_receiver)?,
+            ctx.sema.type_of_expr(dot_receiver)?.original,
             fuzzy_name,
             dot_receiver.syntax().clone(),
         )
     } else {
         let fuzzy_name_length = fuzzy_name.len();
-        let approximate_node = match current_module.definition_source(ctx.db).value {
-            hir::ModuleSource::SourceFile(s) => s.syntax().clone(),
-            hir::ModuleSource::Module(m) => m.syntax().clone(),
-            hir::ModuleSource::BlockExpr(b) => b.syntax().clone(),
-        };
         let assets_for_path = ImportAssets::for_fuzzy_path(
             current_module,
             ctx.path_qual().cloned(),
             fuzzy_name,
             &ctx.sema,
-            approximate_node,
+            ctx.token.parent()?,
         )?;
 
         if matches!(assets_for_path.import_candidate(), ImportCandidate::Path(_))
@@ -701,8 +696,8 @@ fn main() {
 }
 "#,
             expect![[r#"
-                ct SPECIAL_CONST (use dep::test_mod::TestTrait) DEPRECATED
                 fn weird_function() (use dep::test_mod::TestTrait) fn() DEPRECATED
+                ct SPECIAL_CONST (use dep::test_mod::TestTrait) DEPRECATED
             "#]],
         );
     }
@@ -1187,6 +1182,25 @@ pub trait Private {
 impl<T> Private for T {}
             "#,
             expect![[r#""#]],
+        );
+    }
+
+    #[test]
+    fn regression_9760() {
+        check(
+            r#"
+struct Struct;
+fn main() {}
+
+mod mud {
+    fn func() {
+        let struct_instance = Stru$0
+    }
+}
+"#,
+            expect![[r#"
+                st Struct (use crate::Struct)
+            "#]],
         );
     }
 }

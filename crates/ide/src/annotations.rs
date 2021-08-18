@@ -70,14 +70,8 @@ pub(crate) fn annotations(
                 hir::ModuleDef::Trait(trait_) => {
                     trait_.source(db).and_then(|node| name_range(&node, file_id))
                 }
-                hir::ModuleDef::Adt(hir::Adt::Struct(strukt)) => {
-                    strukt.source(db).and_then(|node| name_range(&node, file_id))
-                }
-                hir::ModuleDef::Adt(hir::Adt::Enum(enum_)) => {
-                    enum_.source(db).and_then(|node| name_range(&node, file_id))
-                }
-                hir::ModuleDef::Adt(hir::Adt::Union(union)) => {
-                    union.source(db).and_then(|node| name_range(&node, file_id))
+                hir::ModuleDef::Adt(adt) => {
+                    adt.source(db).and_then(|node| name_range(&node, file_id))
                 }
                 _ => None,
             };
@@ -133,12 +127,12 @@ pub(crate) fn annotations(
 }
 
 pub(crate) fn resolve_annotation(db: &RootDatabase, mut annotation: Annotation) -> Annotation {
-    match annotation.kind {
-        AnnotationKind::HasImpls { position, ref mut data } => {
-            *data = goto_implementation(db, position).map(|range| range.info);
+    match &mut annotation.kind {
+        AnnotationKind::HasImpls { position, data } => {
+            *data = goto_implementation(db, *position).map(|range| range.info);
         }
-        AnnotationKind::HasReferences { position, ref mut data } => {
-            *data = find_all_refs(&Semantics::new(db), position, None).map(|result| {
+        AnnotationKind::HasReferences { position, data } => {
+            *data = find_all_refs(&Semantics::new(db), *position, None).map(|result| {
                 result
                     .references
                     .into_iter()

@@ -10,8 +10,8 @@ use syntax::{
 use crate::{
     assist_context::{AssistBuilder, AssistContext, Assists},
     utils::{
-        add_trait_assoc_items_to_impl, filter_assoc_items, generate_trait_impl_text,
-        render_snippet, Cursor, DefaultMethods,
+        add_trait_assoc_items_to_impl, filter_assoc_items, gen_trait_fn_body,
+        generate_trait_impl_text, render_snippet, Cursor, DefaultMethods,
     },
     AssistId, AssistKind,
 };
@@ -32,8 +32,8 @@ use crate::{
 // struct S;
 //
 // impl Debug for S {
-//     fn fmt(&self, f: &mut Formatter) -> Result<()> {
-//         ${0:todo!()}
+//     $0fn fmt(&self, f: &mut Formatter) -> Result<()> {
+//         f.debug_struct("S").finish()
 //     }
 // }
 // ```
@@ -111,7 +111,7 @@ fn add_assist(
         |builder| {
             let insert_pos = adt.syntax().text_range().end();
             let impl_def_with_items =
-                impl_def_from_trait(&ctx.sema, &annotated_name, trait_, trait_path);
+                impl_def_from_trait(&ctx.sema, adt, &annotated_name, trait_, trait_path);
             update_attribute(builder, input, &trait_name, attr);
             let trait_path = format!("{}", trait_path);
             match (ctx.config.snippet_cap, impl_def_with_items) {
@@ -149,6 +149,7 @@ fn add_assist(
 
 fn impl_def_from_trait(
     sema: &hir::Semantics<ide_db::RootDatabase>,
+    adt: &ast::Adt,
     annotated_name: &ast::Name,
     trait_: Option<hir::Trait>,
     trait_path: &ast::Path,
@@ -163,6 +164,12 @@ fn impl_def_from_trait(
         make::impl_trait(trait_path.clone(), make::ext::ident_path(&annotated_name.text()));
     let (impl_def, first_assoc_item) =
         add_trait_assoc_items_to_impl(sema, trait_items, trait_, impl_def, target_scope);
+
+    // Generate a default `impl` function body for the derived trait.
+    if let ast::AssocItem::Fn(ref func) = first_assoc_item {
+        let _ = gen_trait_fn_body(func, trait_path, adt);
+    };
+
     Some((impl_def, first_assoc_item))
 }
 
@@ -207,41 +214,567 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_custom_impl_debug() {
+    fn add_custom_impl_debug_record_struct() {
         check_assist(
             replace_derive_with_manual_impl,
             r#"
-mod fmt {
-    pub struct Error;
-    pub type Result = Result<(), Error>;
-    pub struct Formatter<'a>;
-    pub trait Debug {
-        fn fmt(&self, f: &mut Formatter<'_>) -> Result;
-    }
-}
-
+//- minicore: fmt
 #[derive(Debu$0g)]
 struct Foo {
     bar: String,
 }
 "#,
             r#"
-mod fmt {
-    pub struct Error;
-    pub type Result = Result<(), Error>;
-    pub struct Formatter<'a>;
-    pub trait Debug {
-        fn fmt(&self, f: &mut Formatter<'_>) -> Result;
-    }
-}
-
 struct Foo {
     bar: String,
 }
 
-impl fmt::Debug for Foo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        ${0:todo!()}
+impl core::fmt::Debug for Foo {
+    $0fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Foo").field("bar", &self.bar).finish()
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_debug_tuple_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: fmt
+#[derive(Debu$0g)]
+struct Foo(String, usize);
+"#,
+            r#"struct Foo(String, usize);
+
+impl core::fmt::Debug for Foo {
+    $0fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("Foo").field(&self.0).field(&self.1).finish()
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_debug_empty_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: fmt
+#[derive(Debu$0g)]
+struct Foo;
+"#,
+            r#"
+struct Foo;
+
+impl core::fmt::Debug for Foo {
+    $0fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Foo").finish()
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_debug_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: fmt
+#[derive(Debu$0g)]
+enum Foo {
+    Bar,
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar,
+    Baz,
+}
+
+impl core::fmt::Debug for Foo {
+    $0fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Bar => write!(f, "Bar"),
+            Self::Baz => write!(f, "Baz"),
+        }
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_default_record_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: default
+#[derive(Defau$0lt)]
+struct Foo {
+    foo: usize,
+}
+"#,
+            r#"
+struct Foo {
+    foo: usize,
+}
+
+impl Default for Foo {
+    $0fn default() -> Self {
+        Self { foo: Default::default() }
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_default_tuple_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: default
+#[derive(Defau$0lt)]
+struct Foo(usize);
+"#,
+            r#"
+struct Foo(usize);
+
+impl Default for Foo {
+    $0fn default() -> Self {
+        Self(Default::default())
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_default_empty_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: default
+#[derive(Defau$0lt)]
+struct Foo;
+"#,
+            r#"
+struct Foo;
+
+impl Default for Foo {
+    $0fn default() -> Self {
+        Self {  }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_hash_record_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: hash
+#[derive(Has$0h)]
+struct Foo {
+    bin: usize,
+    bar: usize,
+}
+"#,
+            r#"
+struct Foo {
+    bin: usize,
+    bar: usize,
+}
+
+impl core::hash::Hash for Foo {
+    $0fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.bin.hash(state);
+        self.bar.hash(state);
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_hash_tuple_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: hash
+#[derive(Has$0h)]
+struct Foo(usize, usize);
+"#,
+            r#"
+struct Foo(usize, usize);
+
+impl core::hash::Hash for Foo {
+    $0fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+        self.1.hash(state);
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_hash_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: hash
+#[derive(Has$0h)]
+enum Foo {
+    Bar,
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar,
+    Baz,
+}
+
+impl core::hash::Hash for Foo {
+    $0fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_clone_record_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: clone
+#[derive(Clo$0ne)]
+struct Foo {
+    bin: usize,
+    bar: usize,
+}
+"#,
+            r#"
+struct Foo {
+    bin: usize,
+    bar: usize,
+}
+
+impl Clone for Foo {
+    $0fn clone(&self) -> Self {
+        Self { bin: self.bin.clone(), bar: self.bar.clone() }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_clone_tuple_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: clone
+#[derive(Clo$0ne)]
+struct Foo(usize, usize);
+"#,
+            r#"
+struct Foo(usize, usize);
+
+impl Clone for Foo {
+    $0fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_clone_empty_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: clone
+#[derive(Clo$0ne)]
+struct Foo;
+"#,
+            r#"
+struct Foo;
+
+impl Clone for Foo {
+    $0fn clone(&self) -> Self {
+        Self {  }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_clone_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: clone
+#[derive(Clo$0ne)]
+enum Foo {
+    Bar,
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar,
+    Baz,
+}
+
+impl Clone for Foo {
+    $0fn clone(&self) -> Self {
+        match self {
+            Self::Bar => Self::Bar,
+            Self::Baz => Self::Baz,
+        }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_clone_tuple_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: clone
+#[derive(Clo$0ne)]
+enum Foo {
+    Bar(String),
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar(String),
+    Baz,
+}
+
+impl Clone for Foo {
+    $0fn clone(&self) -> Self {
+        match self {
+            Self::Bar(arg0) => Self::Bar(arg0.clone()),
+            Self::Baz => Self::Baz,
+        }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_clone_record_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: clone
+#[derive(Clo$0ne)]
+enum Foo {
+    Bar {
+        bin: String,
+    },
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar {
+        bin: String,
+    },
+    Baz,
+}
+
+impl Clone for Foo {
+    $0fn clone(&self) -> Self {
+        match self {
+            Self::Bar { bin } => Self::Bar { bin: bin.clone() },
+            Self::Baz => Self::Baz,
+        }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_partial_eq_record_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: eq
+#[derive(Partial$0Eq)]
+struct Foo {
+    bin: usize,
+    bar: usize,
+}
+"#,
+            r#"
+struct Foo {
+    bin: usize,
+    bar: usize,
+}
+
+impl PartialEq for Foo {
+    $0fn eq(&self, other: &Self) -> bool {
+        self.bin == other.bin && self.bar == other.bar
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_partial_eq_tuple_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: eq
+#[derive(Partial$0Eq)]
+struct Foo(usize, usize);
+"#,
+            r#"
+struct Foo(usize, usize);
+
+impl PartialEq for Foo {
+    $0fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_partial_eq_empty_struct() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: eq
+#[derive(Partial$0Eq)]
+struct Foo;
+"#,
+            r#"
+struct Foo;
+
+impl PartialEq for Foo {
+    $0fn eq(&self, other: &Self) -> bool {
+        true
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_partial_eq_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: eq
+#[derive(Partial$0Eq)]
+enum Foo {
+    Bar,
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar,
+    Baz,
+}
+
+impl PartialEq for Foo {
+    $0fn eq(&self, other: &Self) -> bool {
+        core::mem::discriminant(self) == core::mem::discriminant(other)
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_partial_eq_tuple_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: eq
+#[derive(Partial$0Eq)]
+enum Foo {
+    Bar(String),
+    Baz,
+}
+"#,
+            r#"
+enum Foo {
+    Bar(String),
+    Baz,
+}
+
+impl PartialEq for Foo {
+    $0fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bar(l0), Self::Bar(r0)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn add_custom_impl_partial_eq_record_enum() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: eq
+#[derive(Partial$0Eq)]
+enum Foo {
+    Bar {
+        bin: String,
+    },
+    Baz {
+        qux: String,
+        fez: String,
+    },
+    Qux {},
+    Bin,
+}
+"#,
+            r#"
+enum Foo {
+    Bar {
+        bin: String,
+    },
+    Baz {
+        qux: String,
+        fez: String,
+    },
+    Qux {},
+    Bin,
+}
+
+impl PartialEq for Foo {
+    $0fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bar { bin: l_bin }, Self::Bar { bin: r_bin }) => l_bin == r_bin,
+            (Self::Baz { qux: l_qux, fez: l_fez }, Self::Baz { qux: r_qux, fez: r_fez }) => l_qux == r_qux && l_fez == r_fez,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
     }
 }
 "#,

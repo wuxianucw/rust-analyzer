@@ -32,6 +32,18 @@ pub mod ext {
         path_unqualified(path_segment(name_ref(ident)))
     }
 
+    pub fn path_from_idents<'a>(
+        parts: impl std::iter::IntoIterator<Item = &'a str>,
+    ) -> Option<ast::Path> {
+        let mut iter = parts.into_iter();
+        let base = ext::ident_path(iter.next()?);
+        let path = iter.fold(base, |base, s| {
+            let path = ext::ident_path(s);
+            path_concat(base, path)
+        });
+        Some(path)
+    }
+
     pub fn expr_unreachable() -> ast::Expr {
         expr_from_text("unreachable!()")
     }
@@ -264,6 +276,10 @@ pub fn expr_path(path: ast::Path) -> ast::Expr {
 pub fn expr_continue() -> ast::Expr {
     expr_from_text("continue")
 }
+// Consider `op: SyntaxKind` instead for nicer syntax at the call-site?
+pub fn expr_bin_op(lhs: ast::Expr, op: ast::BinaryOp, rhs: ast::Expr) -> ast::Expr {
+    expr_from_text(&format!("{} {} {}", lhs, op, rhs))
+}
 pub fn expr_break(expr: Option<ast::Expr>) -> ast::Expr {
     match expr {
         Some(expr) => expr_from_text(&format!("break {}", expr)),
@@ -304,11 +320,25 @@ pub fn expr_prefix(op: SyntaxKind, expr: ast::Expr) -> ast::Expr {
 pub fn expr_call(f: ast::Expr, arg_list: ast::ArgList) -> ast::Expr {
     expr_from_text(&format!("{}{}", f, arg_list))
 }
-pub fn expr_method_call(receiver: ast::Expr, method: &str, arg_list: ast::ArgList) -> ast::Expr {
+pub fn expr_method_call(
+    receiver: ast::Expr,
+    method: ast::NameRef,
+    arg_list: ast::ArgList,
+) -> ast::Expr {
     expr_from_text(&format!("{}.{}{}", receiver, method, arg_list))
+}
+pub fn expr_macro_call(f: ast::Expr, arg_list: ast::ArgList) -> ast::Expr {
+    expr_from_text(&format!("{}!{}", f, arg_list))
 }
 pub fn expr_ref(expr: ast::Expr, exclusive: bool) -> ast::Expr {
     expr_from_text(&if exclusive { format!("&mut {}", expr) } else { format!("&{}", expr) })
+}
+pub fn expr_closure(pats: impl IntoIterator<Item = ast::Param>, expr: ast::Expr) -> ast::Expr {
+    let params = pats.into_iter().join(", ");
+    expr_from_text(&format!("|{}| {}", params, expr))
+}
+pub fn expr_field(receiver: ast::Expr, field: &str) -> ast::Expr {
+    expr_from_text(&format!("{}.{}", receiver, field))
 }
 pub fn expr_paren(expr: ast::Expr) -> ast::Expr {
     expr_from_text(&format!("({})", expr))
@@ -515,6 +545,10 @@ pub fn expr_stmt(expr: ast::Expr) -> ast::ExprStmt {
 
 pub fn param(pat: ast::Pat, ty: ast::Type) -> ast::Param {
     ast_from_text(&format!("fn f({}: {}) {{ }}", pat, ty))
+}
+
+pub fn self_param() -> ast::SelfParam {
+    ast_from_text(&format!("fn f(&self) {{ }}"))
 }
 
 pub fn ret_type(ty: ast::Type) -> ast::RetType {

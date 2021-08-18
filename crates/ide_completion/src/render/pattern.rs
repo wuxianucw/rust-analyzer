@@ -4,7 +4,12 @@ use hir::{db::HirDatabase, HasAttrs, HasVisibility, Name, StructKind};
 use ide_db::helpers::SnippetCap;
 use itertools::Itertools;
 
-use crate::{item::CompletionKind, render::RenderContext, CompletionItem, CompletionItemKind};
+use crate::{
+    context::{ParamKind, PatternContext},
+    item::CompletionKind,
+    render::RenderContext,
+    CompletionItem, CompletionItemKind,
+};
 
 pub(crate) fn render_struct_pat(
     ctx: RenderContext<'_>,
@@ -83,7 +88,10 @@ fn render_pat(
         _ => return None,
     };
 
-    if ctx.completion.is_param {
+    if matches!(
+        ctx.completion.pattern_ctx,
+        Some(PatternContext { is_param: Some(ParamKind::Function), .. })
+    ) {
         pat.push(':');
         pat.push(' ');
         pat.push_str(name);

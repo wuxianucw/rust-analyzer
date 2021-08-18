@@ -75,6 +75,15 @@ pub(crate) trait TryToNav {
     fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget>;
 }
 
+impl<T: TryToNav, U: TryToNav> TryToNav for Either<T, U> {
+    fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget> {
+        match self {
+            Either::Left(it) => it.try_to_nav(db),
+            Either::Right(it) => it.try_to_nav(db),
+        }
+    }
+}
+
 impl NavigationTarget {
     pub fn focus_or_full_range(&self) -> TextRange {
         self.focus_range.unwrap_or(self.full_range)
@@ -519,6 +528,7 @@ pub(crate) fn description_from_symbol(db: &RootDatabase, symbol: &FileSymbol) ->
             ast::Static(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             ast::RecordField(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             ast::Variant(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Union(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             _ => None,
         }
     }

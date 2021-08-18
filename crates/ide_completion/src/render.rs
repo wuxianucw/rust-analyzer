@@ -7,6 +7,7 @@ pub(crate) mod enum_variant;
 pub(crate) mod const_;
 pub(crate) mod pattern;
 pub(crate) mod type_alias;
+pub(crate) mod struct_literal;
 
 mod builder_ext;
 
@@ -166,7 +167,7 @@ fn render_resolution_(
         hir::ScopeDef::ModuleDef(Function(func)) => {
             return render_fn(ctx, import_to_add, Some(local_name), *func);
         }
-        hir::ScopeDef::ModuleDef(Variant(_)) if ctx.completion.is_pat_or_const.is_some() => {
+        hir::ScopeDef::ModuleDef(Variant(_)) if ctx.completion.pattern_ctx.is_some() => {
             CompletionItemKind::SymbolKind(SymbolKind::Variant)
         }
         hir::ScopeDef::ModuleDef(Variant(var)) => {
@@ -1348,10 +1349,10 @@ fn foo() {
                 lc foo [type+local]
                 ev Foo::A(…) [type_could_unify]
                 ev Foo::B [type_could_unify]
+                fn foo() []
                 en Foo []
                 fn baz() []
                 fn bar() []
-                fn foo() []
             "#]],
         );
     }

@@ -1,21 +1,19 @@
 //! Assorted functions shared by several assists.
 
 pub(crate) mod suggest_name;
+mod gen_trait_fn_body;
 
 use std::ops;
 
-use hir::{Adt, HasSource, Semantics};
-use ide_db::{
-    helpers::{FamousDefs, SnippetCap},
-    path_transform::PathTransform,
-    RootDatabase,
-};
+use hir::HasSource;
+use ide_db::{helpers::SnippetCap, path_transform::PathTransform, RootDatabase};
 use itertools::Itertools;
 use stdx::format_to;
 use syntax::{
     ast::{
         self,
         edit::{self, AstNodeEdit},
+        edit_in_place::AttrsOwnerEdit,
         make, ArgListOwner, AttrsOwner, GenericParamsOwner, NameOwner, TypeBoundsOwner,
     },
     ted, AstNode, Direction, SmolStr,
@@ -24,6 +22,8 @@ use syntax::{
 };
 
 use crate::assist_context::{AssistBuilder, AssistContext};
+
+pub(crate) use gen_trait_fn_body::gen_trait_fn_body;
 
 pub(crate) fn unwrap_trivial_block(block: ast::BlockExpr) -> ast::Expr {
     extract_trivial_expression(&block)
@@ -126,16 +126,13 @@ pub fn add_trait_assoc_items_to_impl(
 ) -> (ast::Impl, ast::AssocItem) {
     let source_scope = sema.scope_for_def(trait_);
 
-    let transform = PathTransform {
-        subst: (trait_, impl_.clone()),
-        source_scope: &source_scope,
-        target_scope: &target_scope,
-    };
+    let transform = PathTransform::trait_impl(&target_scope, &source_scope, trait_, impl_.clone());
 
     let items = items.into_iter().map(|assoc_item| {
         let assoc_item = assoc_item.clone_for_update();
-        transform.apply(assoc_item.clone());
-        edit::remove_attrs_and_docs(&assoc_item).clone_subtree().clone_for_update()
+        transform.apply(assoc_item.syntax());
+        assoc_item.remove_attrs_and_docs();
+        assoc_item
     });
 
     let res = impl_.clone_for_update();
@@ -208,34 +205,28 @@ pub(crate) fn vis_offset(node: &SyntaxNode) -> TextSize {
         .unwrap_or_else(|| node.text_range().start())
 }
 
-pub(crate) fn invert_boolean_expression(
-    sema: &Semantics<RootDatabase>,
-    expr: ast::Expr,
-) -> ast::Expr {
-    invert_special_case(sema, &expr).unwrap_or_else(|| make::expr_prefix(T![!], expr))
+pub(crate) fn invert_boolean_expression(expr: ast::Expr) -> ast::Expr {
+    invert_special_case(&expr).unwrap_or_else(|| make::expr_prefix(T![!], expr))
 }
 
-fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Option<ast::Expr> {
+fn invert_special_case(expr: &ast::Expr) -> Option<ast::Expr> {
     match expr {
-        ast::Expr::BinExpr(bin) => match bin.op_kind()? {
-            ast::BinOp::NegatedEqualityTest => bin.replace_op(T![==]).map(|it| it.into()),
-            ast::BinOp::EqualityTest => bin.replace_op(T![!=]).map(|it| it.into()),
-            // Swap `<` with `>=`, `<=` with `>`, ... if operands `impl Ord`
-            ast::BinOp::LesserTest if bin_impls_ord(sema, bin) => {
-                bin.replace_op(T![>=]).map(|it| it.into())
-            }
-            ast::BinOp::LesserEqualTest if bin_impls_ord(sema, bin) => {
-                bin.replace_op(T![>]).map(|it| it.into())
-            }
-            ast::BinOp::GreaterTest if bin_impls_ord(sema, bin) => {
-                bin.replace_op(T![<=]).map(|it| it.into())
-            }
-            ast::BinOp::GreaterEqualTest if bin_impls_ord(sema, bin) => {
-                bin.replace_op(T![<]).map(|it| it.into())
-            }
-            // Parenthesize other expressions before prefixing `!`
-            _ => Some(make::expr_prefix(T![!], make::expr_paren(expr.clone()))),
-        },
+        ast::Expr::BinExpr(bin) => {
+            let bin = bin.clone_for_update();
+            let op_token = bin.op_token()?;
+            let rev_token = match op_token.kind() {
+                T![==] => T![!=],
+                T![!=] => T![==],
+                T![<] => T![>=],
+                T![<=] => T![>],
+                T![>] => T![<=],
+                T![>=] => T![<],
+                // Parenthesize other expressions before prefixing `!`
+                _ => return Some(make::expr_prefix(T![!], make::expr_paren(expr.clone()))),
+            };
+            ted::replace(op_token, make::token(rev_token));
+            Some(bin.into())
+        }
         ast::Expr::MethodCallExpr(mce) => {
             let receiver = mce.receiver()?;
             let method = mce.name_ref()?;
@@ -248,9 +239,9 @@ fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Opti
                 "is_err" => "is_ok",
                 _ => return None,
             };
-            Some(make::expr_method_call(receiver, method, arg_list))
+            Some(make::expr_method_call(receiver, make::name_ref(method), arg_list))
         }
-        ast::Expr::PrefixExpr(pe) if pe.op_kind()? == ast::PrefixOp::Not => {
+        ast::Expr::PrefixExpr(pe) if pe.op_kind()? == ast::UnaryOp::Not => {
             if let ast::Expr::ParenExpr(parexpr) = pe.expr()? {
                 parexpr.expr()
             } else {
@@ -265,22 +256,6 @@ fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Opti
             _ => None,
         },
         _ => None,
-    }
-}
-
-fn bin_impls_ord(sema: &Semantics<RootDatabase>, bin: &ast::BinExpr) -> bool {
-    match (
-        bin.lhs().and_then(|lhs| sema.type_of_expr(&lhs)),
-        bin.rhs().and_then(|rhs| sema.type_of_expr(&rhs)),
-    ) {
-        (Some(lhs_ty), Some(rhs_ty)) if lhs_ty == rhs_ty => {
-            let krate = sema.scope(bin.syntax()).module().map(|it| it.krate());
-            let ord_trait = FamousDefs(sema, krate).core_cmp_Ord();
-            ord_trait.map_or(false, |ord_trait| {
-                lhs_ty.autoderef(sema.db).any(|ty| ty.impls_trait(sema.db, ord_trait, &[]))
-            })
-        }
-        _ => false,
     }
 }
 
@@ -317,19 +292,13 @@ pub(crate) fn does_pat_match_variant(pat: &ast::Pat, var: &ast::Pat) -> bool {
 // FIXME: this partially overlaps with `find_impl_block_*`
 pub(crate) fn find_struct_impl(
     ctx: &AssistContext,
-    strukt: &ast::Adt,
+    adt: &ast::Adt,
     name: &str,
 ) -> Option<Option<ast::Impl>> {
     let db = ctx.db();
-    let module = strukt.syntax().ancestors().find(|node| {
-        ast::Module::can_cast(node.kind()) || ast::SourceFile::can_cast(node.kind())
-    })?;
+    let module = adt.syntax().parent()?;
 
-    let struct_def = match strukt {
-        ast::Adt::Enum(e) => Adt::Enum(ctx.sema.to_def(e)?),
-        ast::Adt::Struct(s) => Adt::Struct(ctx.sema.to_def(s)?),
-        ast::Adt::Union(u) => Adt::Union(ctx.sema.to_def(u)?),
-    };
+    let struct_def = ctx.sema.to_def(adt)?;
 
     let block = module.descendants().filter_map(ast::Impl::cast).find_map(|impl_blk| {
         let blk = ctx.sema.to_def(&impl_blk)?;
@@ -515,4 +484,15 @@ pub fn useless_type_special_case(field_name: &str, field_ty: &String) -> Option<
 fn ty_ctor(ty: &String, ctor: &str) -> Option<String> {
     let res = ty.to_string().strip_prefix(ctor)?.strip_prefix('<')?.strip_suffix('>')?.to_string();
     Some(res)
+}
+
+pub(crate) fn get_methods(items: &ast::AssocItemList) -> Vec<ast::Fn> {
+    items
+        .assoc_items()
+        .flat_map(|i| match i {
+            ast::AssocItem::Fn(f) => Some(f),
+            _ => None,
+        })
+        .filter(|f| f.name().is_some())
+        .collect()
 }

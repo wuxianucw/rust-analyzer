@@ -63,6 +63,9 @@ pub(crate) enum ImmediateLocation {
     /// The record expr of the field name we are completing
     RecordExpr(ast::RecordExpr),
     // Original file ast node
+    /// The record expr of the functional update syntax we are completing
+    RecordExprUpdate(ast::RecordExpr),
+    // Original file ast node
     /// The record pat of the field name we are completing
     RecordPat(ast::RecordPat),
 }
@@ -191,6 +194,7 @@ pub(crate) fn determine_location(
             }
         }
     };
+
     let res = match_ast! {
         match parent {
             ast::IdentPat(_it) => ImmediateLocation::IdentPat,
@@ -206,6 +210,9 @@ pub(crate) fn determine_location(
             } else {
                 ImmediateLocation::RecordField
             },
+            ast::RecordExprFieldList(_it) => sema
+                .find_node_at_offset_with_macros(original_file, offset)
+                .map(ImmediateLocation::RecordExprUpdate)?,
             ast::TupleField(_it) => ImmediateLocation::TupleField,
             ast::TupleFieldList(_it) => ImmediateLocation::TupleField,
             ast::TypeBound(_it) => ImmediateLocation::TypeBound,

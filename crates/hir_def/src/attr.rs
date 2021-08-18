@@ -12,7 +12,7 @@ use either::Either;
 use hir_expand::{hygiene::Hygiene, name::AsName, AstId, InFile};
 use itertools::Itertools;
 use la_arena::ArenaMap;
-use mbe::{ast_to_token_tree, DelimiterKind};
+use mbe::{syntax_node_to_token_tree, DelimiterKind};
 use smallvec::{smallvec, SmallVec};
 use syntax::{
     ast::{self, AstNode, AttrsOwner},
@@ -615,7 +615,7 @@ impl DocsRangeMap {
 
         let relative_range = range - line_docs_range.start();
 
-        let &InFile { file_id, value: ref source } = &self.source_map.source_of_id(idx);
+        let InFile { file_id, value: source } = self.source_map.source_of_id(idx);
         match source {
             Either::Left(_) => None, // FIXME, figure out a nice way to handle doc attributes here
             // as well as for whats done in syntax highlight doc injection
@@ -679,7 +679,7 @@ impl Attr {
             };
             Some(Interned::new(AttrInput::Literal(value)))
         } else if let Some(tt) = ast.token_tree() {
-            Some(Interned::new(AttrInput::TokenTree(ast_to_token_tree(&tt).0)))
+            Some(Interned::new(AttrInput::TokenTree(syntax_node_to_token_tree(tt.syntax()).0)))
         } else {
             None
         };

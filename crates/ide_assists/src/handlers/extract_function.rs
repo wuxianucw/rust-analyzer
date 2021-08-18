@@ -2,12 +2,13 @@ use std::{hash::BuildHasherDefault, iter};
 
 use ast::make;
 use either::Either;
-use hir::{HirDisplay, Local, Semantics};
+use hir::{HirDisplay, Local, Semantics, TypeInfo};
 use ide_db::{
     defs::{Definition, NameRefClass},
     search::{FileReference, ReferenceAccess, SearchScope},
     RootDatabase,
 };
+use itertools::Itertools;
 use rustc_hash::FxHasher;
 use stdx::format_to;
 use syntax::{
@@ -16,7 +17,7 @@ use syntax::{
         edit::{AstNodeEdit, IndentLevel},
         AstNode,
     },
-    ted,
+    match_ast, ted,
     SyntaxKind::{self, COMMENT},
     SyntaxNode, SyntaxToken, TextRange, TextSize, TokenAtOffset, WalkEvent, T,
 };
@@ -70,17 +71,17 @@ pub(crate) fn extract_function(acc: &mut Assists, ctx: &AssistContext) -> Option
         syntax::NodeOrToken::Token(t) => t.parent()?,
     };
     let body = extraction_target(&node, range)?;
+    let container_info = body.analyze_container(&ctx.sema)?;
 
-    let (locals_used, has_await, self_param) = analyze_body(&ctx.sema, &body);
+    let (locals_used, self_param) = body.analyze(&ctx.sema);
 
     let anchor = if self_param.is_some() { Anchor::Method } else { Anchor::Freestanding };
     let insert_after = node_to_insert_after(&body, anchor)?;
     let module = ctx.sema.scope(&insert_after).module()?;
 
-    let ret_ty = body_return_ty(ctx, &body)?;
-    let ret_values = ret_values(ctx, &body, node.parent().as_ref().unwrap_or(&node));
-
-    let control_flow = external_control_flow(ctx, &body)?;
+    let ret_ty = body.return_ty(ctx)?;
+    let control_flow = body.external_control_flow(ctx, &container_info)?;
+    let ret_values = body.ret_values(ctx, node.parent().as_ref().unwrap_or(&node));
 
     let target_range = body.text_range();
 
@@ -89,37 +90,32 @@ pub(crate) fn extract_function(acc: &mut Assists, ctx: &AssistContext) -> Option
         "Extract into function",
         target_range,
         move |builder| {
-            let ret_values: Vec<_> = ret_values.collect();
-            if stdx::never!(!ret_values.is_empty() && !ret_ty.is_unit()) {
+            let outliving_locals: Vec<_> = ret_values.collect();
+            if stdx::never!(!outliving_locals.is_empty() && !ret_ty.is_unit()) {
                 // We should not have variables that outlive body if we have expression block
                 return;
             }
 
-            let params = extracted_function_params(ctx, &body, locals_used.iter().copied());
+            let params =
+                body.extracted_function_params(ctx, &container_info, locals_used.iter().copied());
 
-            let insert_comma = body
-                .parent()
-                .and_then(ast::MatchArm::cast)
-                .map_or(false, |it| it.comma_token().is_none());
             let fun = Function {
-                name: "fun_name".to_string(),
+                name: make::name_ref("fun_name"),
                 self_param,
                 params,
                 control_flow,
                 ret_ty,
                 body,
-                vars_defined_in_body_and_outlive: ret_values,
+                outliving_locals,
+                mods: container_info,
             };
 
             let new_indent = IndentLevel::from_node(&insert_after);
             let old_indent = fun.body.indent_level();
 
-            builder.replace(target_range, make_call(ctx, &fun, old_indent, has_await));
-            if insert_comma {
-                builder.insert(target_range.end(), ",");
-            }
+            builder.replace(target_range, make_call(ctx, &fun, old_indent));
 
-            let fn_def = format_function(ctx, module, &fun, old_indent, new_indent, has_await);
+            let fn_def = format_function(ctx, module, &fun, old_indent, new_indent);
             let insert_offset = insert_after.text_range().end();
             match ctx.config.snippet_cap {
                 Some(cap) => builder.insert_snippet(cap, insert_offset, fn_def),
@@ -128,23 +124,68 @@ pub(crate) fn extract_function(acc: &mut Assists, ctx: &AssistContext) -> Option
         },
     )
 }
+
+/// Try to guess what user wants to extract
+///
+/// We have basically have two cases:
+/// * We want whole node, like `loop {}`, `2 + 2`, `{ let n = 1; }` exprs.
+///   Then we can use `ast::Expr`
+/// * We want a few statements for a block. E.g.
+///   ```rust,no_run
+///   fn foo() -> i32 {
+///     let m = 1;
+///     $0
+///     let n = 2;
+///     let k = 3;
+///     k + n
+///     $0
+///   }
+///   ```
+///
+fn extraction_target(node: &SyntaxNode, selection_range: TextRange) -> Option<FunctionBody> {
+    if let Some(stmt) = ast::Stmt::cast(node.clone()) {
+        return match stmt {
+            ast::Stmt::Item(_) => None,
+            ast::Stmt::ExprStmt(_) | ast::Stmt::LetStmt(_) => Some(FunctionBody::from_range(
+                node.parent().and_then(ast::BlockExpr::cast)?,
+                node.text_range(),
+            )),
+        };
+    }
+
+    let expr = ast::Expr::cast(node.clone())?;
+    // A node got selected fully
+    if node.text_range() == selection_range {
+        return FunctionBody::from_expr(expr.clone());
+    }
+
+    // Covering element returned the parent block of one or multiple statements that have been selected
+    if let ast::Expr::BlockExpr(block) = expr {
+        // Extract the full statements.
+        return Some(FunctionBody::from_range(block, selection_range));
+    }
+
+    node.ancestors().find_map(ast::Expr::cast).and_then(FunctionBody::from_expr)
+}
+
 #[derive(Debug)]
 struct Function {
-    name: String,
+    name: ast::NameRef,
     self_param: Option<ast::SelfParam>,
     params: Vec<Param>,
     control_flow: ControlFlow,
     ret_ty: RetType,
     body: FunctionBody,
-    vars_defined_in_body_and_outlive: Vec<OutlivedLocal>,
+    outliving_locals: Vec<OutlivedLocal>,
+    mods: ContainerInfo,
 }
 
 #[derive(Debug)]
 struct Param {
     var: Local,
     ty: hir::Type,
-    has_usages_afterwards: bool,
-    has_mut_inside_body: bool,
+    move_local: bool,
+    requires_mut: bool,
     is_copy: bool,
 }
 
@@ -172,9 +213,23 @@ enum Anchor {
     Method,
 }
 
+// FIXME: ControlFlow and ContainerInfo both track some function modifiers, feels like these two should
+// probably be merged somehow.
 #[derive(Debug)]
 struct ControlFlow {
     kind: Option<FlowKind>,
+    is_async: bool,
+    is_unsafe: bool,
+}
+
+/// The thing whose expression we are extracting from. Can be a function, const, static, const arg, ...
+#[derive(Clone, Debug)]
+struct ContainerInfo {
+    is_const: bool,
+    is_in_tail: bool,
+    parent_loop: Option<SyntaxNode>,
+    /// The function's return type, const's type etc.
+    ret_type: Option<hir::Type>,
 }
 
 /// Control flow that is exported from extracted function
@@ -194,10 +249,6 @@ enum FlowKind {
     /// Return with value (`return $expr;`)
     Return(Option<ast::Expr>),
     Try {
-        kind: TryKind,
-    },
-    TryReturn {
-        expr: ast::Expr,
         kind: TryKind,
     },
     /// Break with value (`break $expr;`)
@@ -247,7 +298,7 @@ struct OutlivedLocal {
 struct LocalUsages(ide_db::search::UsageSearchResult);
 
 impl LocalUsages {
-    fn find(ctx: &AssistContext, var: Local) -> Self {
+    fn find_local_usages(ctx: &AssistContext, var: Local) -> Self {
         Self(
             Definition::Local(var)
                 .usages(&ctx.sema)
@@ -266,7 +317,7 @@ impl Function {
         match &self.ret_ty {
             RetType::Expr(ty) if ty.is_unit() => FunType::Unit,
             RetType::Expr(ty) => FunType::Single(ty.clone()),
-            RetType::Stmt => match self.vars_defined_in_body_and_outlive.as_slice() {
+            RetType::Stmt => match self.outliving_locals.as_slice() {
                 [] => FunType::Unit,
                 [var] => FunType::Single(var.local.ty(ctx.db())),
                 vars => {
@@ -286,11 +337,11 @@ impl ParamKind {
 
 impl Param {
     fn kind(&self) -> ParamKind {
-        match (self.has_usages_afterwards, self.has_mut_inside_body, self.is_copy) {
-            (true, true, _) => ParamKind::MutRef,
-            (true, false, false) => ParamKind::SharedRef,
-            (false, true, _) => ParamKind::MutValue,
-            (true, false, true) | (false, false, _) => ParamKind::Value,
+        match (self.move_local, self.requires_mut, self.is_copy) {
+            (false, true, _) => ParamKind::MutRef,
+            (false, false, false) => ParamKind::SharedRef,
+            (true, true, _) => ParamKind::MutValue,
+            (_, false, _) => ParamKind::Value,
         }
     }
 
@@ -324,12 +375,30 @@ impl Param {
     }
 }
 
+impl TryKind {
+    fn of_ty(ty: hir::Type, ctx: &AssistContext) -> Option<TryKind> {
+        if ty.is_unknown() {
+            // We favour Result for `expr?`
+            return Some(TryKind::Result { ty });
+        }
+        let adt = ty.as_adt()?;
+        let name = adt.name(ctx.db());
+        // FIXME: use lang items to determine if it is std type or user defined
+        //        E.g. if user happens to define type named `Option`, we would have false positive
+        match name.to_string().as_str() {
+            "Option" => Some(TryKind::Option),
+            "Result" => Some(TryKind::Result { ty }),
+            _ => None,
+        }
+    }
+}
+
 impl FlowKind {
     fn make_result_handler(&self, expr: Option<ast::Expr>) -> ast::Expr {
         match self {
             FlowKind::Return(_) => make::expr_return(expr),
             FlowKind::Break(_) => make::expr_break(expr),
-            FlowKind::Try { .. } | FlowKind::TryReturn { .. } => {
+            FlowKind::Try { .. } => {
                 stdx::never!("cannot have result handler with try");
                 expr.unwrap_or_else(|| make::expr_return(None))
             }
@@ -342,31 +411,15 @@ impl FlowKind {
 
     fn expr_ty(&self, ctx: &AssistContext) -> Option<hir::Type> {
         match self {
-            FlowKind::Return(Some(expr))
-            | FlowKind::Break(Some(expr))
-            | FlowKind::TryReturn { expr, .. } => ctx.sema.type_of_expr(expr),
+            FlowKind::Return(Some(expr)) | FlowKind::Break(Some(expr)) => {
+                ctx.sema.type_of_expr(expr).map(TypeInfo::adjusted)
+            }
             FlowKind::Try { .. } => {
                 stdx::never!("try does not have defined expr_ty");
                 None
             }
             _ => None,
         }
-    }
-}
-
-fn try_kind_of_ty(ty: hir::Type, ctx: &AssistContext) -> Option<TryKind> {
-    if ty.is_unknown() {
-        // We favour Result for `expr?`
-        return Some(TryKind::Result { ty });
-    }
-    let adt = ty.as_adt()?;
-    let name = adt.name(ctx.db());
-    // FIXME: use lang items to determine if it is std type or user defined
-    //        E.g. if user happens to define type named `Option`, we would have false positive
-    match name.to_string().as_str() {
-        "Option" => Some(TryKind::Option),
-        "Result" => Some(TryKind::Result { ty }),
-        _ => None,
     }
 }
 
@@ -387,8 +440,23 @@ impl FunctionBody {
         }
     }
 
-    fn from_range(parent: ast::BlockExpr, text_range: TextRange) -> FunctionBody {
-        Self::Span { parent, text_range }
+    fn from_range(parent: ast::BlockExpr, selected: TextRange) -> FunctionBody {
+        let mut text_range = parent
+            .statements()
+            .map(|stmt| stmt.syntax().text_range())
+            .filter(|&stmt| selected.intersect(stmt).filter(|it| !it.is_empty()).is_some())
+            .fold1(|acc, stmt| acc.cover(stmt));
+        if let Some(tail_range) = parent
+            .tail_expr()
+            .map(|it| it.syntax().text_range())
+            .filter(|&it| selected.intersect(it).is_some())
+        {
+            text_range = Some(match text_range {
+                Some(text_range) => text_range.cover(tail_range),
+                None => tail_range,
+            });
+        }
+        Self::Span { parent, text_range: text_range.unwrap_or(selected) }
     }
 
     fn indent_level(&self) -> IndentLevel {
@@ -507,140 +575,280 @@ impl FunctionBody {
     }
 }
 
-/// Try to guess what user wants to extract
-///
-/// We have basically have two cases:
-/// * We want whole node, like `loop {}`, `2 + 2`, `{ let n = 1; }` exprs.
-///   Then we can use `ast::Expr`
-/// * We want a few statements for a block. E.g.
-///   ```rust,no_run
-///   fn foo() -> i32 {
-///     let m = 1;
-///     $0
-///     let n = 2;
-///     let k = 3;
-///     k + n
-///     $0
-///   }
-///   ```
-///
-fn extraction_target(node: &SyntaxNode, selection_range: TextRange) -> Option<FunctionBody> {
-    if let Some(stmt) = ast::Stmt::cast(node.clone()) {
-        return match stmt {
-            ast::Stmt::Item(_) => None,
-            ast::Stmt::ExprStmt(_) | ast::Stmt::LetStmt(_) => Some(FunctionBody::from_range(
-                node.parent().and_then(ast::BlockExpr::cast)?,
-                node.text_range(),
-            )),
-        };
-    }
-
-    let expr = ast::Expr::cast(node.clone())?;
-    // A node got selected fully
-    if node.text_range() == selection_range {
-        return FunctionBody::from_expr(expr.clone());
-    }
-
-    // Covering element returned the parent block of one or multiple statements that have been selected
-    if let ast::Expr::BlockExpr(block) = expr {
-        // Extract the full statements.
-        let mut statements_range = block
-            .statements()
-            .filter(|stmt| selection_range.intersect(stmt.syntax().text_range()).is_some())
-            .fold(selection_range, |acc, stmt| acc.cover(stmt.syntax().text_range()));
-        if let Some(e) = block
-            .tail_expr()
-            .filter(|it| selection_range.intersect(it.syntax().text_range()).is_some())
-        {
-            statements_range = statements_range.cover(e.syntax().text_range());
-        }
-        return Some(FunctionBody::from_range(block, statements_range));
-    }
-
-    node.ancestors().find_map(ast::Expr::cast).and_then(FunctionBody::from_expr)
-}
-
-/// Analyzes a function body, returning the used local variables that are referenced in it as well as
-/// whether it contains an await expression.
-fn analyze_body(
-    sema: &Semantics<RootDatabase>,
-    body: &FunctionBody,
-) -> (FxIndexSet<Local>, bool, Option<ast::SelfParam>) {
-    // FIXME: currently usages inside macros are not found
-    let mut has_await = false;
-    let mut self_param = None;
-    let mut res = FxIndexSet::default();
-    body.walk_expr(&mut |expr| {
-        has_await |= matches!(expr, ast::Expr::AwaitExpr(_));
-        let name_ref = match expr {
-            ast::Expr::PathExpr(path_expr) => {
-                path_expr.path().and_then(|it| it.as_single_name_ref())
-            }
-            _ => return,
-        };
-        if let Some(name_ref) = name_ref {
-            if let Some(
-                NameRefClass::Definition(Definition::Local(local_ref))
-                | NameRefClass::FieldShorthand { local_ref, field_ref: _ },
-            ) = NameRefClass::classify(sema, &name_ref)
-            {
-                res.insert(local_ref);
-                if local_ref.is_self(sema.db) {
-                    match local_ref.source(sema.db).value {
-                        Either::Right(it) => {
-                            stdx::always!(
-                                self_param.replace(it).is_none(),
-                                "body references two different self params"
-                            );
+impl FunctionBody {
+    /// Analyzes a function body, returning the used local variables that are referenced in it as well as
+    /// whether it contains an await expression.
+    fn analyze(
+        &self,
+        sema: &Semantics<RootDatabase>,
+    ) -> (FxIndexSet<Local>, Option<ast::SelfParam>) {
+        // FIXME: currently usages inside macros are not found
+        let mut self_param = None;
+        let mut res = FxIndexSet::default();
+        self.walk_expr(&mut |expr| {
+            let name_ref = match expr {
+                ast::Expr::PathExpr(path_expr) => {
+                    path_expr.path().and_then(|it| it.as_single_name_ref())
+                }
+                _ => return,
+            };
+            if let Some(name_ref) = name_ref {
+                if let Some(
+                    NameRefClass::Definition(Definition::Local(local_ref))
+                    | NameRefClass::FieldShorthand { local_ref, field_ref: _ },
+                ) = NameRefClass::classify(sema, &name_ref)
+                {
+                    if local_ref.is_self(sema.db) {
+                        match local_ref.source(sema.db).value {
+                            Either::Right(it) => {
+                                stdx::always!(
+                                    self_param.replace(it).is_none(),
+                                    "body references two different self params"
+                                );
+                            }
+                            Either::Left(_) => {
+                                stdx::never!(
+                                    "Local::is_self returned true, but source is IdentPat"
+                                );
+                            }
                         }
-                        Either::Left(_) => {
-                            stdx::never!("Local::is_self returned true, but source is IdentPat");
-                        }
+                    } else {
+                        res.insert(local_ref);
                     }
                 }
             }
+        });
+        (res, self_param)
+    }
+
+    fn analyze_container(&self, sema: &Semantics<RootDatabase>) -> Option<ContainerInfo> {
+        let mut ancestors = self.parent()?.ancestors();
+        let infer_expr_opt = |expr| sema.type_of_expr(&expr?).map(TypeInfo::adjusted);
+        let mut parent_loop = None;
+        let mut set_parent_loop = |loop_: &dyn ast::LoopBodyOwner| {
+            if loop_
+                .loop_body()
+                .map_or(false, |it| it.syntax().text_range().contains_range(self.text_range()))
+            {
+                parent_loop.get_or_insert(loop_.syntax().clone());
+            }
+        };
+        let (is_const, expr, ty) = loop {
+            let anc = ancestors.next()?;
+            break match_ast! {
+                match anc {
+                    ast::ClosureExpr(closure) => (false, closure.body(), infer_expr_opt(closure.body())),
+                    ast::EffectExpr(effect) => {
+                        let (constness, block) = match effect.effect() {
+                            ast::Effect::Const(_) => (true, effect.block_expr()),
+                            ast::Effect::Try(_) => (false, effect.block_expr()),
+                            ast::Effect::Label(label) if label.lifetime().is_some() => (false, effect.block_expr()),
+                            _ => continue,
+                        };
+                        let expr = block.map(ast::Expr::BlockExpr);
+                        (constness, expr.clone(), infer_expr_opt(expr))
+                    },
+                    ast::Fn(fn_) => {
+                        (fn_.const_token().is_some(), fn_.body().map(ast::Expr::BlockExpr), Some(sema.to_def(&fn_)?.ret_type(sema.db)))
+                    },
+                    ast::Static(statik) => {
+                        (true, statik.body(), Some(sema.to_def(&statik)?.ty(sema.db)))
+                    },
+                    ast::ConstArg(ca) => {
+                        (true, ca.expr(), infer_expr_opt(ca.expr()))
+                    },
+                    ast::Const(konst) => {
+                        (true, konst.body(), Some(sema.to_def(&konst)?.ty(sema.db)))
+                    },
+                    ast::ConstParam(cp) => {
+                        (true, cp.default_val(), Some(sema.to_def(&cp)?.ty(sema.db)))
+                    },
+                    ast::ConstBlockPat(cbp) => {
+                        let expr = cbp.block_expr().map(ast::Expr::BlockExpr);
+                        (true, expr.clone(), infer_expr_opt(expr))
+                    },
+                    ast::Variant(__) => return None,
+                    ast::Meta(__) => return None,
+                    ast::LoopExpr(it) => {
+                        set_parent_loop(&it);
+                        continue;
+                    },
+                    ast::ForExpr(it) => {
+                        set_parent_loop(&it);
+                        continue;
+                    },
+                    ast::WhileExpr(it) => {
+                        set_parent_loop(&it);
+                        continue;
+                    },
+                    _ => continue,
+                }
+            };
+        };
+        let container_tail = match expr? {
+            ast::Expr::BlockExpr(block) => block.tail_expr(),
+            expr => Some(expr),
+        };
+        let is_in_tail =
+            container_tail.zip(self.tail_expr()).map_or(false, |(container_tail, body_tail)| {
+                container_tail.syntax().text_range().contains_range(body_tail.syntax().text_range())
+            });
+        Some(ContainerInfo { is_in_tail, is_const, parent_loop, ret_type: ty })
+    }
+
+    fn return_ty(&self, ctx: &AssistContext) -> Option<RetType> {
+        match self.tail_expr() {
+            Some(expr) => ctx.sema.type_of_expr(&expr).map(TypeInfo::original).map(RetType::Expr),
+            None => Some(RetType::Stmt),
         }
-    });
-    (res, has_await, self_param)
-}
+    }
 
-/// find variables that should be extracted as params
-///
-/// Computes additional info that affects param type and mutability
-fn extracted_function_params(
-    ctx: &AssistContext,
-    body: &FunctionBody,
-    locals: impl Iterator<Item = Local>,
-) -> Vec<Param> {
-    locals
-        .filter(|local| !local.is_self(ctx.db()))
-        .map(|local| (local, local.source(ctx.db())))
-        .filter(|(_, src)| is_defined_outside_of_body(ctx, body, src))
-        .filter_map(|(local, src)| {
-            if src.value.is_left() {
-                Some(local)
-            } else {
-                stdx::never!(false, "Local::is_self returned false, but source is SelfParam");
-                None
-            }
-        })
-        .map(|var| {
-            let usages = LocalUsages::find(ctx, var);
-            let ty = var.ty(ctx.db());
-            let is_copy = ty.is_copy(ctx.db());
-            Param {
-                var,
-                ty,
-                has_usages_afterwards: has_usages_after_body(&usages, body),
-                has_mut_inside_body: has_exclusive_usages(ctx, &usages, body),
-                is_copy,
-            }
-        })
-        .collect()
-}
+    /// Local variables defined inside `body` that are accessed outside of it
+    fn ret_values<'a>(
+        &self,
+        ctx: &'a AssistContext,
+        parent: &SyntaxNode,
+    ) -> impl Iterator<Item = OutlivedLocal> + 'a {
+        let parent = parent.clone();
+        let range = self.text_range();
+        locals_defined_in_body(&ctx.sema, self)
+            .into_iter()
+            .filter_map(move |local| local_outlives_body(ctx, range, local, &parent))
+    }
 
-fn has_usages_after_body(usages: &LocalUsages, body: &FunctionBody) -> bool {
-    usages.iter().any(|reference| body.precedes_range(reference.range))
+    /// Analyses the function body for external control flow.
+    fn external_control_flow(
+        &self,
+        ctx: &AssistContext,
+        container_info: &ContainerInfo,
+    ) -> Option<ControlFlow> {
+        let mut ret_expr = None;
+        let mut try_expr = None;
+        let mut break_expr = None;
+        let mut continue_expr = None;
+        let mut is_async = false;
+        let mut _is_unsafe = false;
+
+        let mut unsafe_depth = 0;
+        let mut loop_depth = 0;
+
+        self.preorder_expr(&mut |expr| {
+            let expr = match expr {
+                WalkEvent::Enter(e) => e,
+                WalkEvent::Leave(expr) => {
+                    match expr {
+                        ast::Expr::LoopExpr(_)
+                        | ast::Expr::ForExpr(_)
+                        | ast::Expr::WhileExpr(_) => loop_depth -= 1,
+                        ast::Expr::EffectExpr(effect) if effect.unsafe_token().is_some() => {
+                            unsafe_depth -= 1
+                        }
+                        _ => (),
+                    }
+                    return false;
+                }
+            };
+            match expr {
+                ast::Expr::LoopExpr(_) | ast::Expr::ForExpr(_) | ast::Expr::WhileExpr(_) => {
+                    loop_depth += 1;
+                }
+                ast::Expr::EffectExpr(effect) if effect.unsafe_token().is_some() => {
+                    unsafe_depth += 1
+                }
+                ast::Expr::ReturnExpr(it) => {
+                    ret_expr = Some(it);
+                }
+                ast::Expr::TryExpr(it) => {
+                    try_expr = Some(it);
+                }
+                ast::Expr::BreakExpr(it) if loop_depth == 0 => {
+                    break_expr = Some(it);
+                }
+                ast::Expr::ContinueExpr(it) if loop_depth == 0 => {
+                    continue_expr = Some(it);
+                }
+                ast::Expr::AwaitExpr(_) => is_async = true,
+                // FIXME: Do unsafe analysis on expression, sem highlighting knows this so we should be able
+                // to just lift that out of there
+                // expr if unsafe_depth ==0 && expr.is_unsafe => is_unsafe = true,
+                _ => {}
+            }
+            false
+        });
+
+        let kind = match (try_expr, ret_expr, break_expr, continue_expr) {
+            (Some(_), _, None, None) => {
+                let ret_ty = container_info.ret_type.clone()?;
+                let kind = TryKind::of_ty(ret_ty, ctx)?;
+
+                Some(FlowKind::Try { kind })
+            }
+            (Some(_), _, _, _) => {
+                cov_mark::hit!(external_control_flow_try_and_bc);
+                return None;
+            }
+            (None, Some(r), None, None) => Some(FlowKind::Return(r.expr())),
+            (None, Some(_), _, _) => {
+                cov_mark::hit!(external_control_flow_return_and_bc);
+                return None;
+            }
+            (None, None, Some(_), Some(_)) => {
+                cov_mark::hit!(external_control_flow_break_and_continue);
+                return None;
+            }
+            (None, None, Some(b), None) => Some(FlowKind::Break(b.expr())),
+            (None, None, None, Some(_)) => Some(FlowKind::Continue),
+            (None, None, None, None) => None,
+        };
+
+        Some(ControlFlow { kind, is_async, is_unsafe: _is_unsafe })
+    }
+
+    /// find variables that should be extracted as params
+    ///
+    /// Computes additional info that affects param type and mutability
+    fn extracted_function_params(
+        &self,
+        ctx: &AssistContext,
+        container_info: &ContainerInfo,
+        locals: impl Iterator<Item = Local>,
+    ) -> Vec<Param> {
+        locals
+            .map(|local| (local, local.source(ctx.db())))
+            .filter(|(_, src)| is_defined_outside_of_body(ctx, self, src))
+            .filter_map(|(local, src)| {
+                if let Either::Left(src) = src.value {
+                    Some((local, src))
+                } else {
+                    stdx::never!(false, "Local::is_self returned false, but source is SelfParam");
+                    None
+                }
+            })
+            .map(|(var, src)| {
+                let usages = LocalUsages::find_local_usages(ctx, var);
+                let ty = var.ty(ctx.db());
+
+                let defined_outside_parent_loop = container_info
+                    .parent_loop
+                    .as_ref()
+                    .map_or(true, |it| it.text_range().contains_range(src.syntax().text_range()));
+
+                let is_copy = ty.is_copy(ctx.db());
+                let has_usages = self.has_usages_after_body(&usages);
+                let requires_mut =
+                    !ty.is_mutable_reference() && has_exclusive_usages(ctx, &usages, self);
+                // We can move the value into the function call if it's not used after the call,
+                // if the var is not used but defined outside a loop we are extracting from we can't move it either
+                // as the function will reuse it in the next iteration.
+                let move_local = !has_usages && defined_outside_parent_loop;
+                Param { var, ty, move_local, requires_mut, is_copy }
+            })
+            .collect()
+    }
+
+    fn has_usages_after_body(&self, usages: &LocalUsages) -> bool {
+        usages.iter().any(|reference| self.precedes_range(reference.range))
+    }
 }
 
 /// checks if relevant var is used with `&mut` access inside body
@@ -684,7 +892,7 @@ fn expr_require_exclusive_access(ctx: &AssistContext, expr: &ast::Expr) -> Optio
     let parent = expr.syntax().parent()?;
 
     if let Some(bin_expr) = ast::BinExpr::cast(parent.clone()) {
-        if bin_expr.op_kind()?.is_assignment() {
+        if matches!(bin_expr.op_kind()?, ast::BinaryOp::Assignment { .. }) {
             return Some(bin_expr.lhs()?.syntax() == expr.syntax());
         }
         return Some(false);
@@ -793,19 +1001,6 @@ fn locals_defined_in_body(
     res
 }
 
-/// Local variables defined inside `body` that are accessed outside of it
-fn ret_values<'a>(
-    ctx: &'a AssistContext,
-    body: &FunctionBody,
-    parent: &SyntaxNode,
-) -> impl Iterator<Item = OutlivedLocal> + 'a {
-    let parent = parent.clone();
-    let range = body.text_range();
-    locals_defined_in_body(&ctx.sema, body)
-        .into_iter()
-        .filter_map(move |local| local_outlives_body(ctx, range, local, &parent))
-}
-
 /// Returns usage details if local variable is used after(outside of) body
 fn local_outlives_body(
     ctx: &AssistContext,
@@ -813,7 +1008,7 @@ fn local_outlives_body(
     local: Local,
     parent: &SyntaxNode,
 ) -> Option<OutlivedLocal> {
-    let usages = LocalUsages::find(ctx, local);
+    let usages = LocalUsages::find_local_usages(ctx, local);
     let mut has_mut_usages = false;
     let mut any_outlives = false;
     for usage in usages.iter() {
@@ -845,116 +1040,6 @@ fn either_syntax(value: &Either<ast::IdentPat, ast::SelfParam>) -> &SyntaxNode {
     match value {
         Either::Left(pat) => pat.syntax(),
         Either::Right(it) => it.syntax(),
-    }
-}
-
-fn body_return_ty(ctx: &AssistContext, body: &FunctionBody) -> Option<RetType> {
-    match body.tail_expr() {
-        Some(expr) => {
-            let ty = ctx.sema.type_of_expr(&expr)?;
-            Some(RetType::Expr(ty))
-        }
-        None => Some(RetType::Stmt),
-    }
-}
-
-/// Analyses the function body for external control flow.
-fn external_control_flow(ctx: &AssistContext, body: &FunctionBody) -> Option<ControlFlow> {
-    let mut ret_expr = None;
-    let mut try_expr = None;
-    let mut break_expr = None;
-    let mut continue_expr = None;
-
-    let mut loop_depth = 0;
-
-    body.preorder_expr(&mut |expr| {
-        let expr = match expr {
-            WalkEvent::Enter(e) => e,
-            WalkEvent::Leave(
-                ast::Expr::LoopExpr(_) | ast::Expr::ForExpr(_) | ast::Expr::WhileExpr(_),
-            ) => {
-                loop_depth -= 1;
-                return false;
-            }
-            WalkEvent::Leave(_) => return false,
-        };
-        match expr {
-            ast::Expr::LoopExpr(_) | ast::Expr::ForExpr(_) | ast::Expr::WhileExpr(_) => {
-                loop_depth += 1;
-            }
-            ast::Expr::ReturnExpr(it) => {
-                ret_expr = Some(it);
-            }
-            ast::Expr::TryExpr(it) => {
-                try_expr = Some(it);
-            }
-            ast::Expr::BreakExpr(it) if loop_depth == 0 => {
-                break_expr = Some(it);
-            }
-            ast::Expr::ContinueExpr(it) if loop_depth == 0 => {
-                continue_expr = Some(it);
-            }
-            _ => {}
-        }
-        false
-    });
-
-    let kind = match (try_expr, ret_expr, break_expr, continue_expr) {
-        (Some(e), None, None, None) => {
-            let func = e.syntax().ancestors().find_map(ast::Fn::cast)?;
-            let def = ctx.sema.to_def(&func)?;
-            let ret_ty = def.ret_type(ctx.db());
-            let kind = try_kind_of_ty(ret_ty, ctx)?;
-
-            Some(FlowKind::Try { kind })
-        }
-        (Some(_), Some(r), None, None) => match r.expr() {
-            Some(expr) => {
-                if let Some(kind) = expr_err_kind(&expr, ctx) {
-                    Some(FlowKind::TryReturn { expr, kind })
-                } else {
-                    cov_mark::hit!(external_control_flow_try_and_return_non_err);
-                    return None;
-                }
-            }
-            None => return None,
-        },
-        (Some(_), _, _, _) => {
-            cov_mark::hit!(external_control_flow_try_and_bc);
-            return None;
-        }
-        (None, Some(r), None, None) => Some(FlowKind::Return(r.expr())),
-        (None, Some(_), _, _) => {
-            cov_mark::hit!(external_control_flow_return_and_bc);
-            return None;
-        }
-        (None, None, Some(_), Some(_)) => {
-            cov_mark::hit!(external_control_flow_break_and_continue);
-            return None;
-        }
-        (None, None, Some(b), None) => Some(FlowKind::Break(b.expr())),
-        (None, None, None, Some(_)) => Some(FlowKind::Continue),
-        (None, None, None, None) => None,
-    };
-
-    Some(ControlFlow { kind })
-}
-
-/// Checks is expr is `Err(_)` or `None`
-fn expr_err_kind(expr: &ast::Expr, ctx: &AssistContext) -> Option<TryKind> {
-    let func_name = match expr {
-        ast::Expr::CallExpr(call_expr) => call_expr.expr()?,
-        ast::Expr::PathExpr(_) => expr.clone(),
-        _ => return None,
-    };
-    let text = func_name.syntax().text();
-
-    if text == "Err" {
-        Some(TryKind::Result { ty: ctx.sema.type_of_expr(expr)? })
-    } else if text == "None" {
-        Some(TryKind::Option)
-    } else {
-        None
     }
 }
 
@@ -992,21 +1077,16 @@ fn node_to_insert_after(body: &FunctionBody, anchor: Anchor) -> Option<SyntaxNod
     last_ancestor
 }
 
-fn make_call(
-    ctx: &AssistContext,
-    fun: &Function,
-    indent: IndentLevel,
-    body_contains_await: bool,
-) -> String {
+fn make_call(ctx: &AssistContext, fun: &Function, indent: IndentLevel) -> String {
     let ret_ty = fun.return_type(ctx);
 
-    let args = fun.params.iter().map(|param| param.to_arg(ctx));
-    let args = make::arg_list(args);
+    let args = make::arg_list(fun.params.iter().map(|param| param.to_arg(ctx)));
+    let name = fun.name.clone();
     let call_expr = if fun.self_param.is_some() {
         let self_arg = make::expr_path(make::ext::ident_path("self"));
-        make::expr_method_call(self_arg, &fun.name, args)
+        make::expr_method_call(self_arg, name, args)
     } else {
-        let func = make::expr_path(make::ext::ident_path(&fun.name));
+        let func = make::expr_path(make::path_unqualified(make::path_segment(name)));
         make::expr_call(func, args)
     };
 
@@ -1014,35 +1094,35 @@ fn make_call(
 
     let expr = handler.make_call_expr(call_expr).indent(indent);
 
+    let mut_modifier = |var: &OutlivedLocal| if var.mut_usage_outside_body { "mut " } else { "" };
+
     let mut buf = String::new();
-    match fun.vars_defined_in_body_and_outlive.as_slice() {
+    match fun.outliving_locals.as_slice() {
         [] => {}
         [var] => {
             format_to!(buf, "let {}{} = ", mut_modifier(var), var.local.name(ctx.db()).unwrap())
         }
-        [v0, vs @ ..] => {
+        vars => {
             buf.push_str("let (");
-            format_to!(buf, "{}{}", mut_modifier(v0), v0.local.name(ctx.db()).unwrap());
-            for var in vs {
-                format_to!(buf, ", {}{}", mut_modifier(var), var.local.name(ctx.db()).unwrap());
-            }
+            let bindings = vars.iter().format_with(", ", |local, f| {
+                f(&format_args!("{}{}", mut_modifier(local), local.local.name(ctx.db()).unwrap()))
+            });
+            format_to!(buf, "{}", bindings);
             buf.push_str(") = ");
         }
     }
-    fn mut_modifier(var: &OutlivedLocal) -> &'static str {
-        if var.mut_usage_outside_body {
-            "mut "
-        } else {
-            ""
-        }
-    }
     format_to!(buf, "{}", expr);
-    if body_contains_await {
+    if fun.control_flow.is_async {
         buf.push_str(".await");
     }
-    if fun.ret_ty.is_unit()
-        && (!fun.vars_defined_in_body_and_outlive.is_empty() || !expr.is_block_like())
-    {
+    let insert_comma = fun
+        .body
+        .parent()
+        .and_then(ast::MatchArm::cast)
+        .map_or(false, |it| it.comma_token().is_none());
+    if insert_comma {
+        buf.push(',');
+    } else if fun.ret_ty.is_unit() && (!fun.outliving_locals.is_empty() || !expr.is_block_like()) {
         buf.push(';');
     }
     buf
@@ -1071,9 +1151,7 @@ impl FlowHandler {
                         FlowKind::Return(_) | FlowKind::Break(_) => {
                             FlowHandler::IfOption { action }
                         }
-                        FlowKind::Try { kind } | FlowKind::TryReturn { kind, .. } => {
-                            FlowHandler::Try { kind: kind.clone() }
-                        }
+                        FlowKind::Try { kind } => FlowHandler::Try { kind: kind.clone() },
                     }
                 } else {
                     match flow_kind {
@@ -1083,9 +1161,7 @@ impl FlowHandler {
                         FlowKind::Return(_) | FlowKind::Break(_) => {
                             FlowHandler::MatchResult { err: action }
                         }
-                        FlowKind::Try { kind } | FlowKind::TryReturn { kind, .. } => {
-                            FlowHandler::Try { kind: kind.clone() }
-                        }
+                        FlowKind::Try { kind } => FlowHandler::Try { kind: kind.clone() },
                     }
                 }
             }
@@ -1172,16 +1248,35 @@ fn format_function(
     fun: &Function,
     old_indent: IndentLevel,
     new_indent: IndentLevel,
-    body_contains_await: bool,
 ) -> String {
     let mut fn_def = String::new();
-    let params = make_param_list(ctx, module, fun);
-    let ret_ty = make_ret_ty(ctx, module, fun);
+    let params = fun.make_param_list(ctx, module);
+    let ret_ty = fun.make_ret_ty(ctx, module);
     let body = make_body(ctx, old_indent, new_indent, fun);
-    let async_kw = if body_contains_await { "async " } else { "" };
+    let const_kw = if fun.mods.is_const { "const " } else { "" };
+    let async_kw = if fun.control_flow.is_async { "async " } else { "" };
+    let unsafe_kw = if fun.control_flow.is_unsafe { "unsafe " } else { "" };
     match ctx.config.snippet_cap {
-        Some(_) => format_to!(fn_def, "\n\n{}{}fn $0{}{}", new_indent, async_kw, fun.name, params),
-        None => format_to!(fn_def, "\n\n{}{}fn {}{}", new_indent, async_kw, fun.name, params),
+        Some(_) => format_to!(
+            fn_def,
+            "\n\n{}{}{}{}fn $0{}{}",
+            new_indent,
+            const_kw,
+            async_kw,
+            unsafe_kw,
+            fun.name,
+            params
+        ),
+        None => format_to!(
+            fn_def,
+            "\n\n{}{}{}{}fn {}{}",
+            new_indent,
+            const_kw,
+            async_kw,
+            unsafe_kw,
+            fun.name,
+            params
+        ),
     }
     if let Some(ret_ty) = ret_ty {
         format_to!(fn_def, " {}", ret_ty);
@@ -1191,10 +1286,57 @@ fn format_function(
     fn_def
 }
 
-fn make_param_list(ctx: &AssistContext, module: hir::Module, fun: &Function) -> ast::ParamList {
-    let self_param = fun.self_param.clone();
-    let params = fun.params.iter().map(|param| param.to_param(ctx, module));
-    make::param_list(self_param, params)
+impl Function {
+    fn make_param_list(&self, ctx: &AssistContext, module: hir::Module) -> ast::ParamList {
+        let self_param = self.self_param.clone();
+        let params = self.params.iter().map(|param| param.to_param(ctx, module));
+        make::param_list(self_param, params)
+    }
+
+    fn make_ret_ty(&self, ctx: &AssistContext, module: hir::Module) -> Option<ast::RetType> {
+        let fun_ty = self.return_type(ctx);
+        let handler = if self.mods.is_in_tail {
+            FlowHandler::None
+        } else {
+            FlowHandler::from_ret_ty(self, &fun_ty)
+        };
+        let ret_ty = match &handler {
+            FlowHandler::None => {
+                if matches!(fun_ty, FunType::Unit) {
+                    return None;
+                }
+                fun_ty.make_ty(ctx, module)
+            }
+            FlowHandler::Try { kind: TryKind::Option } => {
+                make::ext::ty_option(fun_ty.make_ty(ctx, module))
+            }
+            FlowHandler::Try { kind: TryKind::Result { ty: parent_ret_ty } } => {
+                let handler_ty = parent_ret_ty
+                    .type_arguments()
+                    .nth(1)
+                    .map(|ty| make_ty(&ty, ctx, module))
+                    .unwrap_or_else(make::ty_unit);
+                make::ext::ty_result(fun_ty.make_ty(ctx, module), handler_ty)
+            }
+            FlowHandler::If { .. } => make::ext::ty_bool(),
+            FlowHandler::IfOption { action } => {
+                let handler_ty = action
+                    .expr_ty(ctx)
+                    .map(|ty| make_ty(&ty, ctx, module))
+                    .unwrap_or_else(make::ty_unit);
+                make::ext::ty_option(handler_ty)
+            }
+            FlowHandler::MatchOption { .. } => make::ext::ty_option(fun_ty.make_ty(ctx, module)),
+            FlowHandler::MatchResult { err } => {
+                let handler_ty = err
+                    .expr_ty(ctx)
+                    .map(|ty| make_ty(&ty, ctx, module))
+                    .unwrap_or_else(make::ty_unit);
+                make::ext::ty_result(fun_ty.make_ty(ctx, module), handler_ty)
+            }
+        };
+        Some(make::ret_type(ret_ty))
+    }
 }
 
 impl FunType {
@@ -1220,45 +1362,6 @@ impl FunType {
     }
 }
 
-fn make_ret_ty(ctx: &AssistContext, module: hir::Module, fun: &Function) -> Option<ast::RetType> {
-    let fun_ty = fun.return_type(ctx);
-    let handler = FlowHandler::from_ret_ty(fun, &fun_ty);
-    let ret_ty = match &handler {
-        FlowHandler::None => {
-            if matches!(fun_ty, FunType::Unit) {
-                return None;
-            }
-            fun_ty.make_ty(ctx, module)
-        }
-        FlowHandler::Try { kind: TryKind::Option } => {
-            make::ext::ty_option(fun_ty.make_ty(ctx, module))
-        }
-        FlowHandler::Try { kind: TryKind::Result { ty: parent_ret_ty } } => {
-            let handler_ty = parent_ret_ty
-                .type_arguments()
-                .nth(1)
-                .map(|ty| make_ty(&ty, ctx, module))
-                .unwrap_or_else(make::ty_unit);
-            make::ext::ty_result(fun_ty.make_ty(ctx, module), handler_ty)
-        }
-        FlowHandler::If { .. } => make::ext::ty_bool(),
-        FlowHandler::IfOption { action } => {
-            let handler_ty = action
-                .expr_ty(ctx)
-                .map(|ty| make_ty(&ty, ctx, module))
-                .unwrap_or_else(make::ty_unit);
-            make::ext::ty_option(handler_ty)
-        }
-        FlowHandler::MatchOption { .. } => make::ext::ty_option(fun_ty.make_ty(ctx, module)),
-        FlowHandler::MatchResult { err } => {
-            let handler_ty =
-                err.expr_ty(ctx).map(|ty| make_ty(&ty, ctx, module)).unwrap_or_else(make::ty_unit);
-            make::ext::ty_result(fun_ty.make_ty(ctx, module), handler_ty)
-        }
-    };
-    Some(make::ret_type(ret_ty))
-}
-
 fn make_body(
     ctx: &AssistContext,
     old_indent: IndentLevel,
@@ -1266,7 +1369,11 @@ fn make_body(
     fun: &Function,
 ) -> ast::BlockExpr {
     let ret_ty = fun.return_type(ctx);
-    let handler = FlowHandler::from_ret_ty(fun, &ret_ty);
+    let handler = if fun.mods.is_in_tail {
+        FlowHandler::None
+    } else {
+        FlowHandler::from_ret_ty(fun, &ret_ty)
+    };
     let block = match &fun.body {
         FunctionBody::Expr(expr) => {
             let expr = rewrite_body_segment(ctx, &fun.params, &handler, expr.syntax());
@@ -1302,7 +1409,7 @@ fn make_body(
             };
 
             if tail_expr.is_none() {
-                match fun.vars_defined_in_body_and_outlive.as_slice() {
+                match fun.outliving_locals.as_slice() {
                     [] => {}
                     [var] => {
                         tail_expr = Some(path_expr_from_local(ctx, var.local));
@@ -1420,7 +1527,7 @@ fn fix_param_usages(ctx: &AssistContext, params: &[Param], syntax: &SyntaxNode) 
             continue;
         }
 
-        let usages = LocalUsages::find(ctx, param.var);
+        let usages = LocalUsages::find_local_usages(ctx, param.var);
         let usages = usages
             .iter()
             .filter(|reference| syntax.text_range().contains_range(reference.range))
@@ -3231,8 +3338,7 @@ fn $0fun_name(n: i32) -> bool {
             r#"
 fn foo() {
     loop {
-        let n = 1;
-        $0
+        let n = 1;$0
         let k = 1;
         loop {
             return;
@@ -3436,8 +3542,7 @@ fn $0fun_name() -> Option<i32> {
             r#"
 fn foo() -> i64 {
     loop {
-        let n = 1;
-        $0
+        let n = 1;$0
         let k = 1;
         if k == 42 {
             break 3;
@@ -3664,8 +3769,7 @@ fn foo() -> Option<()> {
 
     #[test]
     fn try_and_return_ok() {
-        cov_mark::check!(external_control_flow_try_and_return_non_err);
-        check_assist_not_applicable(
+        check_assist(
             extract_function,
             r#"
 //- minicore: result
@@ -3678,6 +3782,23 @@ fn foo() -> Result<(), i64> {
     let m = k + 1;$0
     let h = 1 + m;
     Ok(())
+}
+"#,
+            r#"
+fn foo() -> Result<(), i64> {
+    let n = 1;
+    let m = fun_name()?;
+    let h = 1 + m;
+    Ok(())
+}
+
+fn $0fun_name() -> Result<i32, i64> {
+    let k = foo()?;
+    if k == 42 {
+        return Ok(1);
+    }
+    let m = k + 1;
+    Ok(m)
 }
 "#,
         );
@@ -3830,6 +3951,212 @@ fn main() {
 
 fn $0fun_name() -> i32 {
     100
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn extract_does_not_tear_comments_apart() {
+        check_assist(
+            extract_function,
+            r#"
+fn foo() {
+    /*$0*/
+    foo();
+    foo();
+    /*$0*/
+}
+"#,
+            r#"
+fn foo() {
+    /**/
+    fun_name();
+    /**/
+}
+
+fn $0fun_name() {
+    foo();
+    foo();
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn extract_does_not_wrap_res_in_res() {
+        check_assist(
+            extract_function,
+            r#"
+//- minicore: result
+fn foo() -> Result<(), i64> {
+    $0Result::<i32, i64>::Ok(0)?;
+    Ok(())$0
+}
+"#,
+            r#"
+fn foo() -> Result<(), i64> {
+    fun_name()?
+}
+
+fn $0fun_name() -> Result<(), i64> {
+    Result::<i32, i64>::Ok(0)?;
+    Ok(())
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn extract_knows_const() {
+        check_assist(
+            extract_function,
+            r#"
+const fn foo() {
+    $0()$0
+}
+"#,
+            r#"
+const fn foo() {
+    fun_name();
+}
+
+const fn $0fun_name() {
+    ()
+}
+"#,
+        );
+        check_assist(
+            extract_function,
+            r#"
+const FOO: () = {
+    $0()$0
+};
+"#,
+            r#"
+const FOO: () = {
+    fun_name();
+};
+
+const fn $0fun_name() {
+    ()
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn extract_does_not_move_outer_loop_vars() {
+        check_assist(
+            extract_function,
+            r#"
+fn foo() {
+    let mut x = 5;
+    for _ in 0..10 {
+        $0x += 1;$0
+    }
+}
+"#,
+            r#"
+fn foo() {
+    let mut x = 5;
+    for _ in 0..10 {
+        fun_name(&mut x);
+    }
+}
+
+fn $0fun_name(x: &mut i32) {
+    *x += 1;
+}
+"#,
+        );
+        check_assist(
+            extract_function,
+            r#"
+fn foo() {
+    for _ in 0..10 {
+        let mut x = 5;
+        $0x += 1;$0
+    }
+}
+"#,
+            r#"
+fn foo() {
+    for _ in 0..10 {
+        let mut x = 5;
+        fun_name(x);
+    }
+}
+
+fn $0fun_name(mut x: i32) {
+    x += 1;
+}
+"#,
+        );
+        check_assist(
+            extract_function,
+            r#"
+fn foo() {
+    loop {
+        let mut x = 5;
+        for _ in 0..10 {
+            $0x += 1;$0
+        }
+    }
+}
+"#,
+            r#"
+fn foo() {
+    loop {
+        let mut x = 5;
+        for _ in 0..10 {
+            fun_name(&mut x);
+        }
+    }
+}
+
+fn $0fun_name(x: &mut i32) {
+    *x += 1;
+}
+"#,
+        );
+    }
+
+    // regression test for #9822
+    #[test]
+    fn extract_mut_ref_param_has_no_mut_binding_in_loop() {
+        check_assist(
+            extract_function,
+            r#"
+struct Foo;
+impl Foo {
+    fn foo(&mut self) {}
+}
+fn foo() {
+    let mut x = Foo;
+    while false {
+        let y = &mut x;
+        $0y.foo();$0
+    }
+    let z = x;
+}
+"#,
+            r#"
+struct Foo;
+impl Foo {
+    fn foo(&mut self) {}
+}
+fn foo() {
+    let mut x = Foo;
+    while false {
+        let y = &mut x;
+        fun_name(y);
+    }
+    let z = x;
+}
+
+fn $0fun_name(y: &mut Foo) {
+    y.foo();
 }
 "#,
         );

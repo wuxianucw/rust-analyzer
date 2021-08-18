@@ -944,7 +944,7 @@ fn lifetime_from_chalk_during_deref() {
         r#"
 //- minicore: deref
 struct Box<T: ?Sized> {}
-impl<T> core::ops::Deref for Box<T> {
+impl<T: ?Sized> core::ops::Deref for Box<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -1063,6 +1063,7 @@ fn cfg_tail() {
 fn impl_trait_in_option_9530() {
     check_types(
         r#"
+//- minicore: sized
 struct Option<T>;
 impl<T> Option<T> {
     fn unwrap(self) -> T { loop {} }
@@ -1073,6 +1074,22 @@ fn test() {
     let o = make();
     o.unwrap();
   //^^^^^^^^^^ impl Copy
+}
+        "#,
+    )
+}
+
+#[test]
+fn bare_dyn_trait_binders_9639() {
+    check_no_mismatches(
+        r#"
+//- minicore: fn, coerce_unsized
+fn infix_parse<T, S>(_state: S, _level_code: &Fn(S)) -> T {
+    loop {}
+}
+
+fn parse_arule() {
+    infix_parse((), &(|_recurse| ()))
 }
         "#,
     )

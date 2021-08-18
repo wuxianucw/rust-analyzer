@@ -35,7 +35,7 @@ pub(crate) fn invert_if(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     }
 
     // This assist should not apply for if-let.
-    if expr.condition()?.pat().is_some() {
+    if expr.condition()?.is_pattern_cond() {
         return None;
     }
 
@@ -47,7 +47,7 @@ pub(crate) fn invert_if(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     };
 
     acc.add(AssistId("invert_if", AssistKind::RefactorRewrite), "Invert if", if_range, |edit| {
-        let flip_cond = invert_boolean_expression(&ctx.sema, cond.clone());
+        let flip_cond = invert_boolean_expression(cond.clone());
         edit.replace_ast(cond, flip_cond);
 
         let else_node = else_block.syntax();

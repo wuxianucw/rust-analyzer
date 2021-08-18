@@ -120,8 +120,8 @@ pub fn visit_file_defs(
 ///
 /// Note that, by default, rust-analyzer tests **do not** include core or std
 /// libraries. If you are writing tests for functionality using [`FamousDefs`],
-/// you'd want to include [minicore](test_utils::MiniCore) declaration at the
-/// start of your tests:
+/// you'd want to include minicore (see `test_utils::MiniCore`) declaration at
+/// the start of your tests:
 ///
 /// ```
 /// //- minicore: iterator, ord, derive
@@ -247,6 +247,8 @@ impl SnippetCap {
 
 /// Calls `cb` on each expression inside `expr` that is at "tail position".
 /// Does not walk into `break` or `return` expressions.
+/// Note that modifying the tree while iterating it will cause undefined iteration which might
+/// potentially results in an out of bounds panic.
 pub fn for_each_tail_expr(expr: &ast::Expr, cb: &mut dyn FnMut(&ast::Expr)) {
     match expr {
         ast::Expr::BlockExpr(b) => {

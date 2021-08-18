@@ -8,7 +8,10 @@ use parser::SyntaxKind;
 use rowan::{GreenNodeData, GreenTokenData, WalkEvent};
 
 use crate::{
-    ast::{self, support, AstChildren, AstNode, AstToken, AttrsOwner, NameOwner, SyntaxNode},
+    ast::{
+        self, support, AstChildren, AstNode, AstToken, AttrsOwner, GenericParamsOwner, NameOwner,
+        SyntaxNode,
+    },
     NodeOrToken, SmolStr, SyntaxElement, SyntaxToken, TokenText, T,
 };
 
@@ -52,6 +55,10 @@ impl ast::BlockExpr {
 
     pub fn is_empty(&self) -> bool {
         self.statements().next().is_none() && self.tail_expr().is_none()
+    }
+
+    pub fn as_lone_tail(&self) -> Option<ast::Expr> {
+        self.statements().next().is_none().then(|| self.tail_expr()).flatten()
     }
 }
 
@@ -197,12 +204,12 @@ pub enum AttrKind {
 }
 
 impl AttrKind {
-    /// Returns `true` if the attr_kind is [`Inner`].
+    /// Returns `true` if the attr_kind is [`Inner`](Self::Inner).
     pub fn is_inner(&self) -> bool {
         matches!(self, Self::Inner)
     }
 
-    /// Returns `true` if the attr_kind is [`Outer`].
+    /// Returns `true` if the attr_kind is [`Outer`](Self::Outer).
     pub fn is_outer(&self) -> bool {
         matches!(self, Self::Outer)
     }
@@ -590,6 +597,27 @@ impl ast::Variant {
     }
     pub fn kind(&self) -> StructKind {
         StructKind::from_node(self)
+    }
+}
+
+impl ast::Item {
+    pub fn generic_param_list(&self) -> Option<ast::GenericParamList> {
+        match self {
+            ast::Item::Enum(it) => it.generic_param_list(),
+            ast::Item::Fn(it) => it.generic_param_list(),
+            ast::Item::Impl(it) => it.generic_param_list(),
+            ast::Item::Struct(it) => it.generic_param_list(),
+            ast::Item::Trait(it) => it.generic_param_list(),
+            ast::Item::TypeAlias(it) => it.generic_param_list(),
+            ast::Item::Union(it) => it.generic_param_list(),
+            _ => None,
+        }
+    }
+}
+
+impl ast::Condition {
+    pub fn is_pattern_cond(&self) -> bool {
+        self.let_token().is_some()
     }
 }
 

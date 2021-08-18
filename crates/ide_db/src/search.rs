@@ -246,13 +246,9 @@ impl Definition {
                 hir::GenericDef::Function(it) => {
                     it.source(db).map(|src| src.value.syntax().text_range())
                 }
-                hir::GenericDef::Adt(it) => match it {
-                    hir::Adt::Struct(it) => {
-                        it.source(db).map(|src| src.value.syntax().text_range())
-                    }
-                    hir::Adt::Union(it) => it.source(db).map(|src| src.value.syntax().text_range()),
-                    hir::Adt::Enum(it) => it.source(db).map(|src| src.value.syntax().text_range()),
-                },
+                hir::GenericDef::Adt(it) => {
+                    it.source(db).map(|src| src.value.syntax().text_range())
+                }
                 hir::GenericDef::Trait(it) => {
                     it.source(db).map(|src| src.value.syntax().text_range())
                 }
@@ -655,7 +651,7 @@ fn reference_access(def: &Definition, name_ref: &ast::NameRef) -> Option<Referen
         match_ast! {
             match (node) {
                 ast::BinExpr(expr) => {
-                    if expr.op_kind()?.is_assignment() {
+                    if matches!(expr.op_kind()?, ast::BinaryOp::Assignment { .. }) {
                         // If the variable or field ends on the LHS's end then it's a Write (covers fields and locals).
                         // FIXME: This is not terribly accurate.
                         if let Some(lhs) = expr.lhs() {
